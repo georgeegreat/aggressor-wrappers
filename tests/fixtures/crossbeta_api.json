@@ -1,0 +1,13 @@
+[
+  {
+    "prot_name": "sequence_query",
+    "All_sequence_pred": 0.42,
+    "AA_list": [
+      {"index": 0, "amino_acid": "M", "mean_confidence": 0.1},
+      {"index": 1, "amino_acid": "A", "mean_confidence": 0.6},
+      {"index": 2, "amino_acid": "D", "mean_confidence": 0.2},
+      {"index": 3, "amino_acid": "K", "mean_confidence": 0.8},
+      {"index": 4, "amino_acid": "G", "mean_confidence": 0.3}
+    ]
+  }
+]

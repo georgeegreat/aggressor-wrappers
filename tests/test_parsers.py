@@ -150,8 +150,28 @@ def test_crossbeta_parser(crossbeta_json: Path) -> None:
     result = CrossBetaParser(confidence_threshold=0.5).parse(
         crossbeta_json, protein_id="t", sequence=SEQUENCE
     )
+    assert result.scores[1] == 0.6
     assert result.binary[1] == 1
     assert result.binary[3] == 1
+
+
+def test_crossbeta_parser_api_list_format() -> None:
+    fixture = FIXTURES / "crossbeta_api.json"
+    if not fixture.is_file():
+        pytest.skip("crossbeta API fixture missing")
+    result = CrossBetaParser(confidence_threshold=0.54).parse(
+        fixture, protein_id="t", sequence=SEQUENCE
+    )
+    assert result.binary[1] == 1
+    assert result.binary[0] == 0
+
+
+def test_crossbeta_parser_empty_aa_list(tmp_path: Path) -> None:
+    path = tmp_path / "empty.json"
+    path.write_text('[{"prot_name": "sequence_query", "AA_list": []}]')
+    result = CrossBetaParser().parse(path, protein_id="t", sequence=SEQUENCE)
+    assert result.scores == [0.0] * len(SEQUENCE)
+    assert result.binary == [0] * len(SEQUENCE)
 
 
 def test_merge_wide_format(waltz_detailed_mini: Path, pasta_energy: Path) -> None:

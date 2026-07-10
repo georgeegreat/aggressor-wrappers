@@ -9,6 +9,7 @@ from aggressor_wrappers.core.schema import resolve_predictor_key
 from aggressor_wrappers.runners.appnn import APPNNRunner
 from aggressor_wrappers.runners.archcandy import ArchCandyRunner
 from aggressor_wrappers.runners.base import BasePredictorRunner
+from aggressor_wrappers.runners.crossbeta import CrossBetaRunner
 from aggressor_wrappers.runners.path import PATHRunner
 from aggressor_wrappers.runners.pasta import PASTARunner
 from aggressor_wrappers.runners.waltz import WALTZRunner
@@ -19,6 +20,7 @@ RUNNER_REGISTRY: dict[str, type[BasePredictorRunner]] = {
     "waltz": WALTZRunner,
     "pasta": PASTARunner,
     "archcandy": ArchCandyRunner,
+    "crossbeta": CrossBetaRunner,
 }
 
 # Pipeline-only keys from [runners.*]; not passed to runner constructors.
@@ -48,6 +50,11 @@ def get_runner(
         options.setdefault(
             "score_mode",
             predictor_options(key, cfg).get("score_mode", "cumulative"),
+        )
+    if key == "crossbeta":
+        options.setdefault(
+            "confidence_threshold",
+            predictor_options(key, cfg).get("confidence_threshold", 0.54),
         )
     options.update(overrides)
     return RUNNER_REGISTRY[key](**options)

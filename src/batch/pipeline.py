@@ -249,6 +249,21 @@ def _run_runner_batches(
         )
         return
 
+    if runner_key == "crossbeta" and batch_cfg.parallel_jobs > 1 and not skip_run:
+        emit(
+            f"[{tag}] parallel_jobs={batch_cfg.parallel_jobs}, "
+            f"sequences_per_run={batch_cfg.sequences_per_run or 'all'}"
+        )
+        _run_crossbeta_parallel(
+            runner,
+            batches,
+            layout,
+            parallel_jobs=batch_cfg.parallel_jobs,
+            save_raw_files=save_raw_files,
+            emit=emit,
+        )
+        return
+
     for batch_index, batch in enumerate(batches, start=1):
         batch_label = f"{batch_index}/{total_batches}"
         batch_ids = [protein_id for protein_id, _ in batch]
@@ -292,6 +307,17 @@ def _run_runner_batches(
             )
         elif runner_key == "archcandy":
             raw_map = _run_archcandy_batch(
+                runner,
+                batch_fasta,
+                batch_work,
+                batch_ids,
+                skip_run=skip_run,
+                save_raw_files=save_raw_files,
+                batch_label=batch_label,
+                emit=emit,
+            )
+        elif runner_key == "crossbeta":
+            raw_map = _run_crossbeta_batch(
                 runner,
                 batch_fasta,
                 batch_work,
@@ -383,6 +409,60 @@ def _run_archcandy_parallel(
             future.result()
 
 
+def _run_crossbeta_parallel(
+    runner,
+    batches: list[list[tuple[str, str]]],
+    layout: BatchLayout,
+    *,
+    parallel_jobs: int,
+    save_raw_files: Path | None,
+    emit: LogFn,
+) -> None:
+    tag = _predictor_tag("crossbeta")
+    total = len(batches)
+    work_root = layout.predictor_work_dir("crossbeta")
+
+    def _job(batch_index: int, batch: list[tuple[str, str]]) -> None:
+        if len(batch) != 1:
+            raise RuntimeError(
+                f"[{tag}] job {batch_index}/{total}: expected one sequence per job, "
+                f"got {len(batch)} (check [runners.crossbeta] sequences_per_run)"
+            )
+        batch_label = f"{batch_index}/{total}"
+        protein_id = batch[0][0]
+        batch_work = work_root / protein_id
+        single_fasta = layout.fasta_split_dir / f"{protein_id}.fasta"
+        emit(f"[{tag}] job {batch_label}: submitting {protein_id} …")
+        raw_json = runner.execute(single_fasta, batch_work)
+        emit(f"[{tag}] job {batch_label}: raw results → {raw_json}")
+        result = runner.run(
+            fasta=single_fasta,
+            protein_id=protein_id,
+            work_dir=batch_work,
+            skip_run=True,
+            raw_json=raw_json,
+        )
+        out_csv = layout.predictor_parsed_dir("crossbeta") / f"{protein_id}_{tag}.csv"
+        result.to_csv(out_csv)
+        emit(f"[{tag}] job {batch_label}: wrote {out_csv}")
+        if save_raw_files is not None:
+            archived = _archive_raw_file(
+                raw_json,
+                save_raw_files,
+                protein_id=protein_id,
+                predictor_key="crossbeta",
+            )
+            emit(f"[{tag}] archived raw → {archived}")
+
+    with ThreadPoolExecutor(max_workers=parallel_jobs) as executor:
+        futures = [
+            executor.submit(_job, batch_index, batch)
+            for batch_index, batch in enumerate(batches, start=1)
+        ]
+        for future in as_completed(futures):
+            future.result()
+
+
 def _run_path_parallel(
     runner,
     batches: list[list[tuple[str, str]]],
@@ -457,6 +537,7 @@ def _parse_and_write_runner_batch(
             skip_run=True,
             results_csv=raw_csv if runner_key == "path" else None,
             raw_csv=raw_csv if runner_key in {"appnn", "archcandy"} else None,
+            raw_json=raw_csv if runner_key == "crossbeta" else None,
             raw_txt=raw_csv if runner_key == "waltz" else None,
             raw_profile=raw_csv if runner_key == "pasta" else None,
         )
@@ -699,6 +780,78 @@ def _archived_archcandy_outputs(archive_root: Path, protein_ids: list[str]) -> d
     mapping: dict[str, Path] = {}
     for protein_id in protein_ids:
         path = _find_archived_raw(archive_root, protein_id, "archcandy")
+        if path is not None:
+            mapping[protein_id] = path
+    return mapping if len(mapping) == len(protein_ids) else {}
+
+
+def _run_crossbeta_batch(
+    runner,
+    batch_fasta: Path,
+    batch_work: Path,
+    protein_ids: list[str],
+    *,
+    skip_run: bool,
+    save_raw_files: Path | None,
+    batch_label: str,
+    emit: LogFn,
+) -> dict[str, Path]:
+    if skip_run:
+        emit(f"[Cross-Beta] batch {batch_label}: loading raw from {batch_work} …")
+        raw_map = _discover_crossbeta_raw(batch_work, protein_ids)
+        if raw_map:
+            return raw_map
+        if save_raw_files is not None:
+            raw_map = _archived_crossbeta_outputs(save_raw_files, protein_ids)
+            if raw_map:
+                emit(f"[Cross-Beta] batch {batch_label}: loaded raw from {save_raw_files}")
+                return raw_map
+        raise FileNotFoundError(
+            f"[Cross-Beta] batch {batch_label}: expected per-protein JSON under {batch_work}, "
+            f"per-protein work dirs, or archived raw under {save_raw_files} (--skip-run)"
+        )
+
+    if len(protein_ids) != 1:
+        raise RuntimeError(
+            f"[Cross-Beta] batch {batch_label}: expected one sequence per job, got {len(protein_ids)}"
+        )
+    emit(f"[Cross-Beta] batch {batch_label}: submitting {protein_ids[0]} …")
+    output_dir = runner.execute_batch(batch_fasta, batch_work)
+    emit(f"[Cross-Beta] batch {batch_label}: raw files in {output_dir}")
+
+    raw_map = runner.discover_outputs(output_dir, protein_ids)
+    missing = [pid for pid in protein_ids if pid not in raw_map]
+    if missing:
+        raise FileNotFoundError(
+            f"[Cross-Beta] batch {batch_label}: missing JSON for: {', '.join(missing)}"
+        )
+    return raw_map
+
+
+def _discover_crossbeta_raw(work_root: Path, protein_ids: list[str]) -> dict[str, Path]:
+    """Locate ``{id}_crossbeta.json`` under batch or per-protein work directories."""
+    mapping: dict[str, Path] = {}
+    search_roots = [work_root]
+    parent = work_root.parent
+    if parent.is_dir() and parent != work_root:
+        search_roots.append(parent)
+        for child in sorted(parent.iterdir()):
+            if child.is_dir():
+                search_roots.append(child)
+    for protein_id in protein_ids:
+        filename = f"{protein_id}_crossbeta.json"
+        for root in search_roots:
+            candidate = root / filename
+            if candidate.is_file():
+                mapping[protein_id] = candidate
+                break
+    return mapping if len(mapping) == len(protein_ids) else {}
+
+
+def _archived_crossbeta_outputs(archive_root: Path, protein_ids: list[str]) -> dict[str, Path]:
+    mapping: dict[str, Path] = {}
+    for protein_id in protein_ids:
+        path = _find_archived_raw(archive_root, protein_id, "crossbeta")
         if path is not None:
             mapping[protein_id] = path
     return mapping if len(mapping) == len(protein_ids) else {}

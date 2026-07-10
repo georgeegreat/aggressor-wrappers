@@ -59,7 +59,7 @@ PREDICTOR_REGISTRY: dict[str, PredictorSpec] = {
         display_name="Cross-Beta",
         score_column="cross-beta-predictor_score",
         bin_column="cross-beta-predictor_bin",
-        default_threshold=0.5,
+        default_threshold=0.54,
     ),
     "pasta": PredictorSpec(
         key="pasta",

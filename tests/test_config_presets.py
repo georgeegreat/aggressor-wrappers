@@ -74,6 +74,10 @@ def test_runner_batch_config_defaults() -> None:
     assert archcandy_cfg.sequences_per_run == 1
     assert archcandy_cfg.parallel_jobs == 2
 
+    crossbeta_cfg = runner_batch_config("crossbeta")
+    assert crossbeta_cfg.sequences_per_run == 1
+    assert crossbeta_cfg.parallel_jobs == 2
+
 
 def test_pipeline_predictors_from_config() -> None:
     from aggressor_wrappers.core.config import default_pipeline_predictors
@@ -84,6 +88,7 @@ def test_pipeline_predictors_from_config() -> None:
         "waltz",
         "pasta",
         "archcandy",
+        "crossbeta",
     ]
 
 

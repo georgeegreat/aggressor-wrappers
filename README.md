@@ -51,6 +51,7 @@ python -m pytest
 | **WALTZ**     | Public web service — no local install ([waltz.switchlab.org](https://waltz.switchlab.org/))                                                    | WALTZ                           |
 | **PASTA 2.0** | Public web service — no local install ([old.protein.bio.unipd.it/pasta2/](http://old.protein.bio.unipd.it/pasta2/))                            | PASTA                           |
 | **ArchCandy** | Public web service — no local install ([bioinfo.crbm.cnrs.fr/archCandy-input](https://bioinfo.crbm.cnrs.fr/archCandy-input))                  | ArchCandy                       |
+| **Cross-Beta** | Public web service — no local install ([bioinfo.crbm.cnrs.fr/crossBetaPred/](https://bioinfo.crbm.cnrs.fr/crossBetaPred/))                      | Cross-Beta                      |
 
 
 **APPNN (R) install** — if system site-library is not writable, packages go to the user library automatically:
@@ -101,7 +102,7 @@ which will show you all commands that can be used. For each of them, simply run
 ```bash
 aggressor-parse --help             # parse one predictor
 aggressor-merge --help             # merge standard CSVs
-aggressor-run --help               # run PATH / APPNN / WALTZ / PASTA / ArchCandy
+aggressor-run --help               # run PATH / APPNN / WALTZ / PASTA / ArchCandy / Cross-Beta
 aggressor-widemerge --help        # merge + optional BHT reference check
 
 # or alternatively
@@ -154,7 +155,7 @@ Default predictors for the main multifasta command (`aggressor-wrappers FASTA -o
 
 ```ini
 [pipeline]
-predictors = path,appnn,waltz,pasta,archcandy
+predictors = path,appnn,waltz,pasta,archcandy,crossbeta
 ```
 
 Override per run with `--predictors path,appnn` (or any subset).
@@ -201,6 +202,23 @@ verify_ssl = false      # CRBM certificate may fail strict verify
 ```
 
 `[predictors.archcandy] score_mode = cumulative` (default) or `highest` (max region score).
+
+### `[runners.crossbeta]`
+
+Cross-Beta accepts **one sequence per API job**. Submission uses `threshold=0.54` and
+`window_size=auto` (CRBM web defaults). Per-residue binarisation for parsed CSV uses
+`[predictors.crossbeta] confidence_threshold = 0.54` — matching legacy BHT tables
+(not the older 0.5 documented on some CRBM pages).
+
+```ini
+[runners.crossbeta]
+base_url = https://bioinfo.crbm.cnrs.fr/
+threshold = 0.54
+window_size = auto
+parallel_jobs = 2
+sequences_per_run = 1
+verify_ssl = false
+```
 
 ### `[predictors.*]`
 
@@ -256,7 +274,7 @@ Layout: `cache/{protein_id}/{predictor}/raw.{ext}` — removed after each run un
 
 ```
 FASTA / raw predictor output
-        ↓  aggressor-run / aggressor-wrappers (PATH, APPNN, WALTZ, PASTA, ArchCandy) or aggressor-parse
+        ↓  aggressor-run / aggressor-wrappers (PATH, APPNN, WALTZ, PASTA, ArchCandy, Cross-Beta) or aggressor-parse
 standard CSV per predictor   (+ optional raw cache)
         ↓  aggressor-merge  (or aggressor-widemerge with --reference)
 wide CSV (position, aa_name, all predictors)
@@ -320,6 +338,7 @@ aggressor-run path --fasta RPS2.fasta -o RPS2_PATH.csv --work-dir ./path_work
 aggressor-run waltz --fasta APP.fasta -o APP_waltz.csv
 aggressor-run pasta --fasta APP.fasta -o APP_pasta.csv
 aggressor-run archcandy --fasta APP.fasta -o APP_ArchCandy.csv
+aggressor-run crossbeta --fasta RPL27.fasta -o RPL27_crossbeta.csv
 
 # Parse existing raw output without running the tool:
 aggressor-run path --skip-run --results results.csv --fasta RPS2.fasta -o out.csv
@@ -330,7 +349,7 @@ aggressor-run archcandy --skip-run --input APP_archcandy.csv --fasta APP.fasta -
 ```
 
 PATH threading is slow — use `--skip-run` in CI or when `results.csv` already exists.
-WALTZ/PASTA/ArchCandy require network access to public web servers.
+WALTZ/PASTA/ArchCandy/Cross-Beta require network access to public web servers.
 
 ### `aggressor-wrappers` (multifasta pipeline)
 
@@ -354,6 +373,7 @@ output_dir/
 ├── waltz/parsed/{protein_id}_waltz.csv
 ├── pasta/parsed/{protein_id}_pasta.csv
 ├── ArchCandy/parsed/{protein_id}_ArchCandy.csv
+├── cross-beta-predictor/parsed/{protein_id}_cross-beta-predictor.csv
 ├── merged/{protein_id}_merged.csv
 └── .tmp/                  # removed after successful run (fasta split scratch)
 ```
@@ -380,6 +400,10 @@ sequences_per_run = 10   # web job batch size
 
 [runners.archcandy]
 parallel_jobs = 2        # concurrent API jobs (one sequence each)
+sequences_per_run = 1
+
+[runners.crossbeta]
+parallel_jobs = 2
 sequences_per_run = 1
 ```
 
@@ -535,14 +559,16 @@ Thresholds default from `config.cfg`.
 
 
 
-### `crossbeta` — Cross-Beta predictor (CRBM JSON)
+### `crossbeta` — Cross-Beta web service
 
 
 |                              |                                                                                       |
 | ---------------------------- | ------------------------------------------------------------------------------------- |
-| **Raw input**                | JSON from CRBM datastore: `{id: [{AA_list: [{index, amino_acid, mean_confidence}]}]}` |
+| **Raw input**                | JSON from CRBM API (`result` file): list or legacy dict with `AA_list` / `mean_confidence` |
 | `cross-beta-predictor_score` | `mean_confidence` per residue (`index` is 0-based in JSON → +1 for position)          |
-| `cross-beta-predictor_bin`   | 1 if mean_confidence ≥ 0.5                                                            |
+| `cross-beta-predictor_bin`   | 1 if mean_confidence ≥ 0.54 (legacy BHT default; override in config.cfg)            |
+| **CLI**                      | `aggressor-run crossbeta --fasta protein.fasta -o out.csv` or `aggressor-parse …`   |
+| **Runner**                   | HTTP REST API at [bioinfo.crbm.cnrs.fr/crossBetaPred/](https://bioinfo.crbm.cnrs.fr/crossBetaPred/); one sequence per job |
 
 
 
@@ -599,7 +625,7 @@ aggressor_wrappers/              ← repo / project root (clone this folder)
 │   ├── batch/                multifasta pipeline
 │   ├── core/                 schema, config, cache, fasta, merge, validate, metascore
 │   ├── predictors/           parser modules (all predictors)
-│   ├── runners/              PATH / APPNN / WALTZ / PASTA / ArchCandy execution
+│   ├── runners/              PATH / APPNN / WALTZ / PASTA / ArchCandy / Cross-Beta execution
 │   └── cli/                  parse, merge, run, batch, widemerge, app
 └── tests/                    unit + golden tests (fixtures only)
 ```
@@ -617,7 +643,7 @@ python -m pytest
 !!Do not rely on a system-wide `pytest` from `apt` — it uses a different Python than your conda/venv!!
 
 - Unit parsers: `tests/test_parsers.py`
-- Web runners: `tests/test_waltz_runner.py`, `tests/test_pasta_runner.py`, `tests/test_archcandy_runner.py`
+- Web runners: `tests/test_waltz_runner.py`, `tests/test_pasta_runner.py`, `tests/test_archcandy_runner.py`, `tests/test_crossbeta_runner.py`
 - Cache: `tests/test_cache.py`
 - Batch: `tests/test_batch.py`
 - Golden merge roundtrip vs `BHT_amyloid/all/RPS2_human_all.csv`
@@ -629,12 +655,12 @@ python -m pytest
 
 ## Manual workflow (parse-only tools)
 
-For AggreProt and Cross-Beta (no live runner yet), run the main pipeline for
-PATH/APPNN/WALTZ/PASTA/ArchCandy, then per-protein `aggressor-parse` and merge:
+For AggreProt (no live runner yet), run the main pipeline for
+PATH/APPNN/WALTZ/PASTA/ArchCandy/Cross-Beta, then per-protein `aggressor-parse` and merge:
 
 ```bash
 aggressor-parse crossbeta --input raw/${ID}.json --fasta fasta_split/${ID}.fasta \
-  -o output_dir/crossbeta/parsed/${ID}_crossbeta.csv
+  -o output_dir/cross-beta-predictor/parsed/${ID}_cross-beta-predictor.csv
 aggressor-merge output_dir/*/parsed/${ID}_*.csv --fasta fasta_split/${ID}.fasta \
   -o output_dir/merged/${ID}_merged.csv
 ```
@@ -645,7 +671,7 @@ Or merge with BHT reference check: `aggressor-widemerge --reference …`.
 
 
 
-## Development roadmap (v0.3.1)
+## Development roadmap (v0.3.2)
 
 
 | Phase | Status      | Notes                                                                               |
@@ -653,14 +679,14 @@ Or merge with BHT reference check: `aggressor-widemerge --reference …`.
 | **0** | done        | 7 parsers, merge, cache, config, golden tests                                       |
 | **1** | done        | PATH/APPNN runners, multifasta batch, `aggressor-widemerge`                          |
 | **2** | done        | WALTZ web runner (HTTP)                                                               |
-| **3** | in progress | PASTA + ArchCandy web runners done; AggreProt, Cross-Beta next (`legacy/api/`)      |
+| **3** | in progress | PASTA + ArchCandy + Cross-Beta web runners done; AggreProt next (`legacy/api/`)     |
 | **4** | planned     | Aggrescan parser + runner                                                           |
 | **5** | planned     | `aggressor-metascore` CLI, CI on GitHub Actions                                     |
 
 
 **Validated:** `aggressor-wrappers vendor/PATH/test.fasta -o output_dir` with PATH +
-APPNN + WALTZ + PASTA + ArchCandy in env `AGGRESSOR` (Modeller + PyRosetta + R `appnn` + network).
-ArchCandy: one REST job per protein (~4 s each via CRBM API).
+APPNN + WALTZ + PASTA + ArchCandy + Cross-Beta in env `AGGRESSOR`.
+Cross-Beta: `threshold=0.54`, `window_size=auto`; parser `confidence_threshold=0.54` (BHT legacy).
 
 ---
 
