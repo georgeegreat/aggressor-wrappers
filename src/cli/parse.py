@@ -7,7 +7,7 @@ import sys
 
 from aggressor_wrappers.core.cache import clear_cache_dir, store_raw_cache
 from aggressor_wrappers.core.config import load_config
-from aggressor_wrappers.core.fasta import read_first_sequence
+from aggressor_wrappers.core.fasta import normalise_sequence, read_first_sequence
 from aggressor_wrappers.predictors.registry import get_parser, list_parsers
 
 
@@ -128,7 +128,7 @@ def _resolve_sequence_and_id(args: argparse.Namespace) -> tuple[str, str]:
 
     if args.sequence:
         protein_id = args.protein_id or "protein"
-        return args.sequence.upper().replace(" ", ""), protein_id
+        return normalise_sequence(args.sequence), protein_id
 
     raise SystemExit("Error: provide --fasta or --sequence")
 

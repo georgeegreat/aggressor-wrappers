@@ -369,12 +369,14 @@ python aggressor-wrappers.py vendor/PATH/test.fasta -o output_dir
 
 ```
 output_dir/
+├── {output_dir_name}.log   # full terminal transcript (append on resume)
 ├── PATH/parsed/{protein_id}_PATH.csv
 ├── APPNN/parsed/{protein_id}_APPNN.csv
 ├── waltz/parsed/{protein_id}_waltz.csv
 ├── pasta/parsed/{protein_id}_pasta.csv
 ├── ArchCandy/parsed/{protein_id}_ArchCandy.csv
 ├── cross-beta-predictor/parsed/{protein_id}_cross-beta-predictor.csv
+├── aggreprot/parsed/{protein_id}_aggreprot.csv
 ├── merged/{protein_id}_merged.csv
 └── .tmp/                  # removed after successful run (fasta split scratch)
 ```
@@ -416,6 +418,14 @@ sequences_per_run = 1
 | `--save-raw-files` | Archive raw tool outputs per protein (enables `--skip-run` after cleanup) |
 | `--keep-cache`     | Keep `cache/` after run (default: removed)                                |
 | `--skip-run`       | Parse only; read raw from `{PREDICTOR}/work/` or `--save-raw-files`       |
+| `--no-resume`      | Re-run all predictors even when valid `parsed/` CSVs already exist        |
+
+On repeat runs into the same `-o` directory, the pipeline **resumes by default**:
+for each predictor it checks `{PREDICTOR}/parsed/{id}_*.csv` against the input
+FASTA (row count and `aa_name` sequence). Valid outputs are reused; missing or
+stale files are re-computed. Use `--no-resume` to force a full re-run.
+Resume is disabled with `--skip-run` (that mode always re-parses from raw `work/`
+files). Progress lines are tee'd to `{output_dir_name}.log` in append mode.
 
 
 **Smoke test** (3 short proteins; PATH is slow, web predictors add network time — ArchCandy ~4 s/protein):

@@ -13,6 +13,8 @@
 #   conda activate AGGRESSOR
 #   conda env update -f environment.yml --prune
 #   pip install -e ".[test]"
+#
+# Pipeline runs tee progress to {output_dir}/{output_dir_name}.log (see README).
 
 name: AGGRESSOR
 channels:

@@ -43,6 +43,16 @@ def get_runner(
     options = {
         k: v for k, v in runner_options(key, cfg).items() if k not in _RUNNER_BATCH_KEYS
     }
+    if key == "path":
+        options.setdefault(
+            "threshold_percentile",
+            predictor_options(key, cfg).get("threshold_percentile", 75.0),
+        )
+    if key == "appnn":
+        options.setdefault(
+            "score_threshold",
+            predictor_options(key, cfg).get("score_threshold", 0.5),
+        )
     if key == "pasta":
         options.setdefault(
             "energy_threshold",

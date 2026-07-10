@@ -10,13 +10,25 @@ from aggressor_wrappers.core.config import AppConfig, CacheConfig, MetascoreConf
 
 def test_clear_cache_dir(tmp_path: Path) -> None:
     root = tmp_path / "cache"
-    root.mkdir()
-    (root / "protein" / "waltz").mkdir(parents=True)
+    raw = root / "protein" / "waltz" / "raw.dat"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("cached")
     cfg = AppConfig(cache=CacheConfig(root=str(root), enabled=True))
 
     removed = clear_cache_dir(cfg)
     assert removed == root
     assert not root.exists()
+
+
+def test_clear_cache_dir_refuses_unrelated_tree(tmp_path: Path) -> None:
+    root = tmp_path / "cache"
+    root.mkdir()
+    (root / "unrelated.bin").write_text("keep me")
+    cfg = AppConfig(cache=CacheConfig(root=str(root), enabled=True))
+
+    removed = clear_cache_dir(cfg)
+    assert removed is None
+    assert (root / "unrelated.bin").is_file()
 
 
 def test_store_raw_cache(tmp_path: Path) -> None:

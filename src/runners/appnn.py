@@ -148,9 +148,16 @@ class APPNNRunner(BasePredictorRunner):
         if len(matches) == 1:
             return matches[0]
         if matches:
-            for path in matches:
-                if clean_id in path.stem or protein_id in path.stem:
-                    return path
-            return matches[0]
+            id_hits = [
+                path
+                for path in matches
+                if clean_id in path.stem or protein_id in path.stem
+            ]
+            if len(id_hits) == 1:
+                return id_hits[0]
+            names = ", ".join(path.name for path in matches)
+            raise FileNotFoundError(
+                f"Ambiguous APPNN CSV for {protein_id!r} under {out_root}: {names}"
+            )
 
         raise FileNotFoundError(f"No APPNN CSV found under {out_root}")

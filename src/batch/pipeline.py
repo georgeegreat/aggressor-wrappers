@@ -1,4 +1,9 @@
-"""Orchestrate multifasta runs across predictors with progress logging."""
+"""Orchestrate multifasta runs across predictors with progress logging.
+
+Batch orchestration lives here; cross-cutting concerns are split out deliberately:
+* ``batch.resume`` — checkpoint validation (reuse ``read_standard_csv``)
+* ``batch.logging`` — stdout tee to ``{output_dir.name}.log`` (CLI wiring)
+"""
 
 from __future__ import annotations
 
@@ -6,16 +11,16 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Iterable
 
+from aggressor_wrappers.batch.logging import LogFn, default_log
+from aggressor_wrappers.batch.resume import partition_items_for_resume
 from aggressor_wrappers.core.config import load_config, runner_batch_config
 from aggressor_wrappers.core.fasta import read_fasta
 from aggressor_wrappers.core.merge import merge_predictor_tables
-from aggressor_wrappers.core.schema import get_predictor_spec, read_standard_csv
+from aggressor_wrappers.core.schema import get_predictor_spec, read_standard_csv, resolve_predictor_key
 from aggressor_wrappers.predictors.registry import get_parser, list_parsers
 from aggressor_wrappers.runners.registry import get_runner, list_runners
-
-LogFn = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -77,8 +82,20 @@ def split_multifasta(multifasta: Path, layout: BatchLayout) -> dict[str, str]:
     return sequences
 
 
+def _resume_enabled(*, resume: bool, skip_run: bool) -> bool:
+    """
+    Whether to skip predictors whose ``parsed/`` output already matches the FASTA.
+
+    Disabled with ``--skip-run``: that mode always re-parses from raw ``work/``
+    files (e.g. after a parser fix), so reusing existing parsed tables would
+    defeat the purpose.
+    """
+    return resume and not skip_run
+
+
 def _default_log(message: str) -> None:
-    print(message, flush=True)
+    """Backward-compatible alias; prefer ``batch.logging.default_log``."""
+    default_log(message)
 
 
 def _predictor_tag(key: str) -> str:
@@ -92,6 +109,7 @@ def run_multifasta_pipeline(
     predictors: Iterable[str] | None = None,
     config_path: str | None = None,
     skip_run: bool = False,
+    resume: bool = True,
     save_raw_files: Path | None = None,
     keep_cache: bool = False,
     log: LogFn | None = None,
@@ -101,6 +119,10 @@ def run_multifasta_pipeline(
 
     Per-runner batching is controlled by ``[runners.*]`` in config.cfg
     (``parallel_jobs``, ``sequences_per_run``).
+
+    When ``resume`` is true (default) and ``skip_run`` is false, existing
+    ``{PREDICTOR}/parsed/{id}_*.csv`` files are validated against the input
+    FASTA (length and ``aa_name``) and skipped when they already match.
 
     Returns ``{protein_id: merged_csv_path}``.
     """
@@ -125,6 +147,8 @@ def run_multifasta_pipeline(
     if skip_run:
         work_roots = ", ".join(str(layout.predictor_work_dir(k)) for k in runner_keys)
         emit(f"[setup] --skip-run: parsing raw files from {work_roots}")
+    elif _resume_enabled(resume=resume, skip_run=skip_run):
+        emit("[setup] resume enabled: will reuse valid parsed CSVs from prior runs")
 
     items = list(sequences.items())
 
@@ -135,6 +159,7 @@ def run_multifasta_pipeline(
             layout,
             config_path=config_path,
             skip_run=skip_run,
+            resume=resume,
             save_raw_files=save_raw_files,
             emit=emit,
         )
@@ -144,8 +169,10 @@ def run_multifasta_pipeline(
             parse_only_keys,
             protein_ids,
             layout,
+            sequences=sequences,
             save_raw_files=save_raw_files,
             config_path=config_path,
+            resume=_resume_enabled(resume=resume, skip_run=skip_run),
             emit=emit,
         )
 
@@ -179,9 +206,13 @@ def _normalise_predictors(
     keys: list[str] = []
     for item in predictors:
         for part in item.split(","):
-            part = part.strip().lower()
-            if part:
-                keys.append(part)
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                keys.append(resolve_predictor_key(part))
+            except KeyError as exc:
+                raise ValueError(str(exc)) from exc
     if not keys:
         raise ValueError("No predictors selected")
     return keys
@@ -209,14 +240,29 @@ def _run_runner_batches(
     *,
     config_path: str | None,
     skip_run: bool,
+    resume: bool,
     save_raw_files: Path | None,
     emit: LogFn,
 ) -> None:
     runner = get_runner(runner_key, config_path=config_path)
     tag = _predictor_tag(runner_key)
+
+    partition = partition_items_for_resume(
+        items,
+        parsed_dir=layout.predictor_parsed_dir(runner_key),
+        runner_key=runner_key,
+        tag=tag,
+        resume=_resume_enabled(resume=resume, skip_run=skip_run),
+        emit=emit,
+    )
+    if not partition.pending:
+        emit(f"[{tag}] all {len(items)} protein(s) already parsed; skipping runner")
+        return
+
+    pending_items = partition.pending
     batch_cfg = runner_batch_config(runner_key, load_config(config_path))
-    chunk_size = _chunk_size_for_runner(runner_key, len(items), config_path)
-    batches = chunk_items(items, chunk_size)
+    chunk_size = _chunk_size_for_runner(runner_key, len(pending_items), config_path)
+    batches = chunk_items(pending_items, chunk_size)
     total_batches = len(batches)
 
     if runner_key == "path" and batch_cfg.parallel_jobs > 1 and not skip_run:
@@ -920,29 +966,43 @@ def _run_parse_only(
     protein_ids: list[str],
     layout: BatchLayout,
     *,
+    sequences: dict[str, str],
     save_raw_files: Path | None,
     config_path: str | None,
+    resume: bool,
     emit: LogFn,
 ) -> None:
     search_roots = _raw_search_roots(layout, save_raw_files)
     for predictor_key in predictor_keys:
         tag = _predictor_tag(predictor_key)
         parser = get_parser(predictor_key, config_path=config_path)
+        parsed_dir = layout.predictor_parsed_dir(predictor_key)
+        items = [(protein_id, sequences[protein_id]) for protein_id in protein_ids]
+        partition = partition_items_for_resume(
+            items,
+            parsed_dir=parsed_dir,
+            runner_key=predictor_key,
+            tag=tag,
+            resume=resume,
+            emit=emit,
+        )
+        pending_ids = {protein_id for protein_id, _ in partition.pending}
         for protein_id in protein_ids:
+            if protein_id not in pending_ids:
+                continue
             raw_path = _find_raw_file(search_roots, protein_id, predictor_key)
             if raw_path is None:
                 roots = ", ".join(str(root) for root in search_roots)
                 emit(f"[{tag}] skip {protein_id}: no raw file in {roots}")
                 continue
-            single_fasta = layout.fasta_split_dir / f"{protein_id}.fasta"
+            sequence = sequences[protein_id]
             emit(f"[{tag}] parsing {protein_id} from {raw_path} …")
-            sequence = read_fasta(single_fasta)[protein_id]
             result = parser.parse(
                 raw_path,
                 protein_id=protein_id,
                 sequence=sequence,
             )
-            out_csv = layout.predictor_parsed_dir(predictor_key) / f"{protein_id}_{tag}.csv"
+            out_csv = parsed_dir / f"{protein_id}_{tag}.csv"
             out_csv.parent.mkdir(parents=True, exist_ok=True)
             result.to_csv(out_csv)
             emit(f"[{tag}] wrote {out_csv}")

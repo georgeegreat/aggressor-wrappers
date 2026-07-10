@@ -101,3 +101,34 @@ def test_guess_predictor_import() -> None:
 
     assert guess_predictor_from_filename(Path("RPS2_PATH.csv")) == "path"
     assert guess_predictor_from_filename(Path("RPL27_crossbeta.csv")) == "crossbeta"
+    assert guess_predictor_from_filename(Path("foo_cross-beta-predictor.csv")) == "crossbeta"
+    assert guess_predictor_from_filename(Path("sample_waltz.csv")) == "waltz"
+
+    with pytest.raises(ValueError, match="Cannot infer"):
+        guess_predictor_from_filename(Path("hot_path_tracker.csv"))
+
+    # Suffix wins when one predictor is the filename ending.
+    assert guess_predictor_from_filename(Path("foo_path_waltz.csv")) == "waltz"
+
+    with pytest.raises(ValueError, match="Ambiguous"):
+        guess_predictor_from_filename(Path("pasta_waltz_sample.csv"))
+
+
+def test_get_runner_wires_path_and_appnn_thresholds() -> None:
+    from aggressor_wrappers.runners.registry import get_runner
+
+    path_runner = get_runner("path")
+    assert path_runner.threshold_percentile == pytest.approx(75.0)
+
+    appnn_runner = get_runner("appnn")
+    assert appnn_runner.score_threshold == pytest.approx(0.5)
+
+
+def test_normalise_predictors_accepts_aliases() -> None:
+    from aggressor_wrappers.batch.pipeline import _normalise_predictors
+
+    assert _normalise_predictors(["cross-beta", "ArchCandy", "PATH"]) == [
+        "crossbeta",
+        "archcandy",
+        "path",
+    ]

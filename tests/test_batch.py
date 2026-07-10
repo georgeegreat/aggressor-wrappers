@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from aggressor_wrappers.batch.logging import pipeline_log_path
 from aggressor_wrappers.batch.pipeline import chunk_items, run_multifasta_pipeline
+from tests.helpers import write_standard_parsed_csv
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SEQUENCE = "MADKG"
@@ -26,6 +28,35 @@ def test_chunk_items() -> None:
 def test_chunk_items_rejects_invalid_size() -> None:
     with pytest.raises(ValueError, match="chunk_size"):
         chunk_items([("a", "M")], 0)
+
+
+def test_batch_pipeline_resume_skips_completed_predictors(tmp_path: Path) -> None:
+    multifasta = tmp_path / "proteins.fasta"
+    _write_fasta(multifasta, {"protA": SEQUENCE, "protB": SEQUENCE})
+
+    out = tmp_path / "results"
+    for protein_id in ("protA", "protB"):
+        path_parsed = out / "PATH" / "parsed" / f"{protein_id}_PATH.csv"
+        path_parsed.parent.mkdir(parents=True, exist_ok=True)
+        write_standard_parsed_csv(path_parsed, runner_key="path", protein_id=protein_id, sequence=SEQUENCE)
+
+        appnn_parsed = out / "APPNN" / "parsed" / f"{protein_id}_APPNN.csv"
+        appnn_parsed.parent.mkdir(parents=True, exist_ok=True)
+        write_standard_parsed_csv(appnn_parsed, runner_key="appnn", protein_id=protein_id, sequence=SEQUENCE)
+
+    logs: list[str] = []
+    merged = run_multifasta_pipeline(
+        multifasta,
+        out,
+        predictors=["path", "appnn"],
+        resume=True,
+        log=logs.append,
+    )
+
+    assert set(merged) == {"protA", "protB"}
+    assert any("all 2 protein(s) already parsed; skipping runner" in line for line in logs)
+    assert any("[PATH]" in line and "reusing parsed output" in line for line in logs)
+    assert any("[APPNN]" in line and "reusing parsed output" in line for line in logs)
 
 
 def test_batch_pipeline_skip_run_merge(tmp_path: Path) -> None:
@@ -84,6 +115,33 @@ def test_batch_unknown_predictor_raises(tmp_path: Path) -> None:
             predictors=["path", "not_a_tool"],
             skip_run=True,
         )
+
+
+def test_batch_cli_writes_log_file(tmp_path: Path) -> None:
+    multifasta = tmp_path / "proteins.fasta"
+    _write_fasta(multifasta, {"protA": SEQUENCE})
+
+    out = tmp_path / "my_run"
+    for protein_id in ("protA",):
+        path_parsed = out / "PATH" / "parsed" / f"{protein_id}_PATH.csv"
+        path_parsed.parent.mkdir(parents=True, exist_ok=True)
+        write_standard_parsed_csv(path_parsed, runner_key="path", protein_id=protein_id, sequence=SEQUENCE)
+
+        appnn_parsed = out / "APPNN" / "parsed" / f"{protein_id}_APPNN.csv"
+        appnn_parsed.parent.mkdir(parents=True, exist_ok=True)
+        write_standard_parsed_csv(appnn_parsed, runner_key="appnn", protein_id=protein_id, sequence=SEQUENCE)
+
+    from aggressor_wrappers.cli.batch import run_pipeline
+
+    argv = [str(multifasta), "-o", str(out), "--predictors", "path,appnn"]
+    assert run_pipeline(argv) == 0
+
+    log_path = pipeline_log_path(out)
+    assert log_path.is_file()
+    text = log_path.read_text()
+    assert "run started" in text
+    assert "Finished 1 protein(s)" in text
+    assert "[merge]" in text
 
 
 def test_batch_help() -> None:

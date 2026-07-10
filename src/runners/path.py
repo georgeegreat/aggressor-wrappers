@@ -130,8 +130,14 @@ class PATHRunner(BasePredictorRunner):
             return direct
 
         matches = sorted(work_dir.rglob(self.results_filename))
-        if matches:
+        if len(matches) == 1:
             return matches[0]
+        if len(matches) > 1:
+            listed = ", ".join(str(path) for path in matches)
+            raise FileNotFoundError(
+                f"Multiple {self.results_filename!r} under {work_dir}: {listed}. "
+                "Clean work_dir or pass --results manually."
+            )
 
         raise FileNotFoundError(
             f"PATH output missing {self.results_filename!r} under {work_dir}. "

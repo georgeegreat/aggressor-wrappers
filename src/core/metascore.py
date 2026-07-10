@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import warnings
+
 import pandas as pd
 
 from aggressor_wrappers.core.config import AppConfig, load_config
-from aggressor_wrappers.core.schema import PREDICTOR_REGISTRY, get_predictor_spec
+from aggressor_wrappers.core.schema import get_predictor_spec
 
 
 def compute_weighted_metascore(
@@ -18,7 +20,8 @@ def compute_weighted_metascore(
     Linear weighted sum of predictor score columns.
 
     ``wide_df`` must contain ``{Predictor}_score`` columns listed in weights.
-    Missing predictors are skipped with a warning in metadata (caller may log).
+    Missing predictors are skipped with a warning; remaining weights are
+    renormalised so the sum stays on a comparable scale.
     """
     cfg = config or load_config()
     active_weights = weights or cfg.metascore.weights
@@ -30,16 +33,26 @@ def compute_weighted_metascore(
 
     total = pd.Series(0.0, index=wide_df.index)
     used = 0.0
+    missing: list[str] = []
     for key, weight in active_weights.items():
         spec = get_predictor_spec(key)
         col = spec.score_column
         if col not in wide_df.columns:
+            missing.append(col)
             continue
         total = total + wide_df[col].astype(float) * weight
         used += weight
 
     if used == 0:
         raise ValueError("None of the configured weight columns are present in wide_df")
+
+    if missing:
+        warnings.warn(
+            f"metascore: missing score column(s) {missing}; "
+            f"renormalising over remaining weight sum {used:.4f}",
+            UserWarning,
+            stacklevel=2,
+        )
 
     if used < 0.999:
         total = total / used

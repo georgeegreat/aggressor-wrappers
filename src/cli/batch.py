@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from aggressor_wrappers.batch.logging import pipeline_log_sink
 from aggressor_wrappers.batch.pipeline import run_multifasta_pipeline
 from aggressor_wrappers.core.config import default_pipeline_predictors, load_config
 from aggressor_wrappers.predictors.registry import list_parsers
@@ -76,6 +77,14 @@ def build_parser(*, prog: str = "aggressor-wrappers") -> argparse.ArgumentParser
             "{PREDICTOR}/work/ or --save-raw-files archive"
         ),
     )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help=(
+            "Re-run all predictors even when valid parsed CSVs already exist "
+            "under {PREDICTOR}/parsed/ (default: resume from interruption)"
+        ),
+    )
     return parser
 
 
@@ -95,22 +104,25 @@ def run_pipeline(argv: list[str] | None, *, prog: str = "aggressor-wrappers") ->
             predictors = [p.strip() for p in args.predictors.split(",") if p.strip()]
         else:
             predictors = default_pipeline_predictors(load_config(args.config))
-        merged = run_multifasta_pipeline(
-            args.fasta,
-            args.output,
-            predictors=predictors,
-            config_path=args.config,
-            skip_run=args.skip_run,
-            save_raw_files=args.save_raw_files,
-            keep_cache=args.keep_cache,
-        )
+        with pipeline_log_sink(args.output) as emit:
+            merged = run_multifasta_pipeline(
+                args.fasta,
+                args.output,
+                predictors=predictors,
+                config_path=args.config,
+                skip_run=args.skip_run,
+                resume=not args.no_resume,
+                save_raw_files=args.save_raw_files,
+                keep_cache=args.keep_cache,
+                log=emit,
+            )
+            emit(f"Finished {len(merged)} protein(s). Merged tables:")
+            for protein_id, path in merged.items():
+                emit(f"  {protein_id}\t{path}")
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Finished {len(merged)} protein(s). Merged tables:")
-    for protein_id, path in merged.items():
-        print(f"  {protein_id}\t{path}")
     return 0
 
 
@@ -143,6 +155,7 @@ output layout:
   output_dir/cross-beta-predictor/parsed/{{id}}_cross-beta-predictor.csv
   output_dir/aggreprot/parsed/{{id}}_aggreprot.csv
   output_dir/merged/{{id}}_merged.csv
+  output_dir/{{output_dir_name}}.log   # tee of all terminal progress lines
 
 config.cfg defaults:
   [pipeline] predictors = {default_predictors}

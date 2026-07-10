@@ -158,7 +158,7 @@ def load_config(path: str | None = None) -> AppConfig:
     cache_options = _section_options(parser, "cache")
     cache = CacheConfig(
         root=str(cache_options.get("root", "cache")),
-        enabled=bool(cache_options.get("enabled", True)),
+        enabled=bool(cache_options.get("enabled", False)),
     )
 
     meta_options = _section_options(parser, "metascore")

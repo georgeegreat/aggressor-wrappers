@@ -15,6 +15,7 @@ htmlcov/
 # Runtime / local outputs
 cache/
 output_dir/
+e2e_*/
 predictions/
 vendor/PATH/test_output/
 

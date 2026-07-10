@@ -68,12 +68,36 @@ def clear_cache_dir(
     config: AppConfig | None = None,
     cache_root: str | Path | None = None,
 ) -> Path | None:
-    """Remove the cache root directory if it exists. Returns removed path or None."""
+    """
+    Remove the cache root directory if it looks like an aggressor cache tree.
+
+    Refuses to delete a non-empty directory that does not contain
+    ``{protein_id}/{predictor}/raw*`` entries, to avoid wiping an unrelated
+    ``cache/`` folder in the working directory.
+    """
     root = cache_dir(config, cache_root)
-    if root.is_dir():
-        shutil.rmtree(root)
-        return root
-    return None
+    if not root.is_dir():
+        return None
+    if any(root.iterdir()) and not _looks_like_aggressor_cache(root):
+        return None
+    shutil.rmtree(root)
+    return root
+
+
+def _looks_like_aggressor_cache(root: Path) -> bool:
+    """True when ``root`` contains at least one ``*/*/raw*`` cache entry."""
+    try:
+        for protein_dir in root.iterdir():
+            if not protein_dir.is_dir():
+                continue
+            for pred_dir in protein_dir.iterdir():
+                if not pred_dir.is_dir():
+                    continue
+                if any(pred_dir.glob("raw*")):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def _safe_segment(value: str) -> str:
