@@ -141,6 +141,7 @@ output layout:
   output_dir/pasta/parsed/{{id}}_pasta.csv
   output_dir/ArchCandy/parsed/{{id}}_ArchCandy.csv
   output_dir/cross-beta-predictor/parsed/{{id}}_cross-beta-predictor.csv
+  output_dir/aggreprot/parsed/{{id}}_aggreprot.csv
   output_dir/merged/{{id}}_merged.csv
 
 config.cfg defaults:
@@ -151,4 +152,5 @@ config.cfg defaults:
   [runners.pasta] npair = 22, amount = -2.8, sequences_per_run = 10
   [runners.archcandy] parallel_jobs = 2, sequences_per_run = 1 (web service)
   [runners.crossbeta] threshold = 0.54, window_size = auto, sequences_per_run = 1
+  [runners.aggreprot] sequences_per_run = 3 (site limit), timeout_seconds = 1800
 """

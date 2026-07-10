@@ -13,7 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aggressor-run",
         description=(
-            "Run amyloid predictors (PATH, APPNN, WALTZ, PASTA, ArchCandy, Cross-Beta) and write standard "
+            "Run amyloid predictors (PATH, APPNN, WALTZ, PASTA, ArchCandy, Cross-Beta, AggreProt) and write standard "
             "per-residue CSV (position, aa_name, {Tool}_score, {Tool}_bin)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -103,6 +103,8 @@ def main(argv: list[str] | None = None) -> int:
         run_kwargs["raw_csv"] = args.raw_input
     if args.predictor == "crossbeta" and args.raw_input:
         run_kwargs["raw_json"] = args.raw_input
+    if args.predictor == "aggreprot" and args.raw_input:
+        run_kwargs["raw_csv"] = args.raw_input
 
     result = runner.run(**run_kwargs)
     result.to_csv(args.output)
@@ -136,6 +138,7 @@ def _runner_kwargs(args: argparse.Namespace) -> dict:
         "path": {"threshold_percentile": args.threshold},
         "appnn": {"score_threshold": args.threshold},
         "crossbeta": {"confidence_threshold": args.threshold},
+        "aggreprot": {"aggregation_threshold": args.threshold},
     }
     return mapping.get(args.predictor, {})
 
@@ -153,6 +156,7 @@ examples:
 
   aggressor-run archcandy --fasta APP.fasta -o APP_ArchCandy.csv
   aggressor-run crossbeta --fasta RPL27.fasta -o RPL27_crossbeta.csv
+  aggressor-run aggreprot --fasta RPL27.fasta -o RPL27_aggreprot.csv
 
   # Parse precomputed raw files (no external tool execution):
   aggressor-run path --skip-run --results results.csv --fasta RPS2.fasta -o out.csv
@@ -161,6 +165,7 @@ examples:
   aggressor-run pasta --skip-run --input APP_pasta.dat --fasta APP.fasta -o out.csv
   aggressor-run archcandy --skip-run --input APP_archcandy.csv --fasta APP.fasta -o out.csv
   aggressor-run crossbeta --skip-run --input RPL27_crossbeta.json --fasta RPL27.fasta -o out.csv
+  aggressor-run aggreprot --skip-run --input RPL27_aggreprot.csv --fasta RPL27.fasta -o out.csv
 
 configuration ([runners.*] in config.cfg):
   path.script / path.python     vendor/PATH/path1.1.py (Modeller + PyRosetta)
@@ -169,10 +174,12 @@ configuration ([runners.*] in config.cfg):
   pasta.base_url                http://old.protein.bio.unipd.it/pasta2/
   archcandy.base_url            https://bioinfo.crbm.cnrs.fr/
   crossbeta.base_url            https://bioinfo.crbm.cnrs.fr/
+  aggreprot.base_url            https://loschmidt.chemi.muni.cz/aggreprot/
 
 notes:
   PATH threading is slow — configure timeout_seconds or use --skip-run for tests.
   APPNN requires R with the 'appnn' CRAN package installed.
-  WALTZ, PASTA, ArchCandy, and Cross-Beta submit jobs to public web servers (no local install).
+  WALTZ, PASTA, ArchCandy, Cross-Beta, and AggreProt submit jobs to public web servers.
   ArchCandy and Cross-Beta accept one sequence per job (see [runners.archcandy] / [runners.crossbeta]).
+  AggreProt accepts up to 3 sequences per job; FASTA headers must be unique.
 """

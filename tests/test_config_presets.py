@@ -78,6 +78,9 @@ def test_runner_batch_config_defaults() -> None:
     assert crossbeta_cfg.sequences_per_run == 1
     assert crossbeta_cfg.parallel_jobs == 2
 
+    aggreprot_cfg = runner_batch_config("aggreprot")
+    assert aggreprot_cfg.sequences_per_run == 3
+
 
 def test_pipeline_predictors_from_config() -> None:
     from aggressor_wrappers.core.config import default_pipeline_predictors
@@ -89,6 +92,7 @@ def test_pipeline_predictors_from_config() -> None:
         "pasta",
         "archcandy",
         "crossbeta",
+        "aggreprot",
     ]
 
 

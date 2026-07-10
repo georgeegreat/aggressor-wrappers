@@ -6,6 +6,7 @@ from typing import Any
 
 from aggressor_wrappers.core.config import load_config, predictor_options, runner_options
 from aggressor_wrappers.core.schema import resolve_predictor_key
+from aggressor_wrappers.runners.aggreprot import AggreProtRunner
 from aggressor_wrappers.runners.appnn import APPNNRunner
 from aggressor_wrappers.runners.archcandy import ArchCandyRunner
 from aggressor_wrappers.runners.base import BasePredictorRunner
@@ -21,6 +22,7 @@ RUNNER_REGISTRY: dict[str, type[BasePredictorRunner]] = {
     "pasta": PASTARunner,
     "archcandy": ArchCandyRunner,
     "crossbeta": CrossBetaRunner,
+    "aggreprot": AggreProtRunner,
 }
 
 # Pipeline-only keys from [runners.*]; not passed to runner constructors.
@@ -55,6 +57,11 @@ def get_runner(
         options.setdefault(
             "confidence_threshold",
             predictor_options(key, cfg).get("confidence_threshold", 0.54),
+        )
+    if key == "aggreprot":
+        options.setdefault(
+            "aggregation_threshold",
+            predictor_options(key, cfg).get("aggregation_threshold", 0.25),
         )
     options.update(overrides)
     return RUNNER_REGISTRY[key](**options)

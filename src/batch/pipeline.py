@@ -327,6 +327,17 @@ def _run_runner_batches(
                 batch_label=batch_label,
                 emit=emit,
             )
+        elif runner_key == "aggreprot":
+            raw_map = _run_aggreprot_batch(
+                runner,
+                batch_fasta,
+                batch_work,
+                batch_ids,
+                skip_run=skip_run,
+                save_raw_files=save_raw_files,
+                batch_label=batch_label,
+                emit=emit,
+            )
         elif runner_key == "path":
             raw_map = _run_path_batch(
                 runner,
@@ -536,7 +547,7 @@ def _parse_and_write_runner_batch(
             work_dir=batch_work,
             skip_run=True,
             results_csv=raw_csv if runner_key == "path" else None,
-            raw_csv=raw_csv if runner_key in {"appnn", "archcandy"} else None,
+            raw_csv=raw_csv if runner_key in {"appnn", "archcandy", "aggreprot"} else None,
             raw_json=raw_csv if runner_key == "crossbeta" else None,
             raw_txt=raw_csv if runner_key == "waltz" else None,
             raw_profile=raw_csv if runner_key == "pasta" else None,
@@ -575,7 +586,7 @@ def _run_appnn_batch(
             if not missing:
                 return raw_map
         if save_raw_files is not None:
-            raw_map = _archived_appnn_outputs(save_raw_files, protein_ids)
+            raw_map = _archived_runner_outputs(save_raw_files, protein_ids, "appnn")
             if raw_map:
                 emit(f"[APPNN] batch {batch_label}: loaded raw from {save_raw_files}")
                 return raw_map
@@ -615,7 +626,7 @@ def _run_waltz_batch(
         if not missing:
             return raw_map
         if save_raw_files is not None:
-            raw_map = _archived_waltz_outputs(save_raw_files, protein_ids)
+            raw_map = _archived_runner_outputs(save_raw_files, protein_ids, "waltz")
             if raw_map:
                 emit(f"[WALTZ] batch {batch_label}: loaded raw from {save_raw_files}")
                 return raw_map
@@ -637,24 +648,6 @@ def _run_waltz_batch(
     return raw_map
 
 
-def _archived_waltz_outputs(archive_root: Path, protein_ids: list[str]) -> dict[str, Path]:
-    mapping: dict[str, Path] = {}
-    for protein_id in protein_ids:
-        path = _find_archived_raw(archive_root, protein_id, "waltz")
-        if path is not None:
-            mapping[protein_id] = path
-    return mapping if len(mapping) == len(protein_ids) else {}
-
-
-def _archived_waltz_outputs(archive_root: Path, protein_ids: list[str]) -> dict[str, Path]:
-    mapping: dict[str, Path] = {}
-    for protein_id in protein_ids:
-        path = _find_archived_raw(archive_root, protein_id, "waltz")
-        if path is not None:
-            mapping[protein_id] = path
-    return mapping if len(mapping) == len(protein_ids) else {}
-
-
 def _run_pasta_batch(
     runner,
     batch_fasta: Path,
@@ -673,7 +666,7 @@ def _run_pasta_batch(
         if not missing:
             return raw_map
         if save_raw_files is not None:
-            raw_map = _archived_pasta_outputs(save_raw_files, protein_ids)
+            raw_map = _archived_runner_outputs(save_raw_files, protein_ids, "pasta")
             if raw_map:
                 emit(f"[PASTA] batch {batch_label}: loaded raw from {save_raw_files}")
                 return raw_map
@@ -695,24 +688,6 @@ def _run_pasta_batch(
     return raw_map
 
 
-def _archived_pasta_outputs(archive_root: Path, protein_ids: list[str]) -> dict[str, Path]:
-    mapping: dict[str, Path] = {}
-    for protein_id in protein_ids:
-        path = _find_archived_raw(archive_root, protein_id, "pasta")
-        if path is not None:
-            mapping[protein_id] = path
-    return mapping if len(mapping) == len(protein_ids) else {}
-
-
-def _archived_pasta_outputs(archive_root: Path, protein_ids: list[str]) -> dict[str, Path]:
-    mapping: dict[str, Path] = {}
-    for protein_id in protein_ids:
-        path = _find_archived_raw(archive_root, protein_id, "pasta")
-        if path is not None:
-            mapping[protein_id] = path
-    return mapping if len(mapping) == len(protein_ids) else {}
-
-
 def _run_archcandy_batch(
     runner,
     batch_fasta: Path,
@@ -730,7 +705,7 @@ def _run_archcandy_batch(
         if raw_map:
             return raw_map
         if save_raw_files is not None:
-            raw_map = _archived_archcandy_outputs(save_raw_files, protein_ids)
+            raw_map = _archived_runner_outputs(save_raw_files, protein_ids, "archcandy")
             if raw_map:
                 emit(f"[ArchCandy] batch {batch_label}: loaded raw from {save_raw_files}")
                 return raw_map
@@ -776,15 +751,6 @@ def _discover_archcandy_raw(work_root: Path, protein_ids: list[str]) -> dict[str
     return mapping if len(mapping) == len(protein_ids) else {}
 
 
-def _archived_archcandy_outputs(archive_root: Path, protein_ids: list[str]) -> dict[str, Path]:
-    mapping: dict[str, Path] = {}
-    for protein_id in protein_ids:
-        path = _find_archived_raw(archive_root, protein_id, "archcandy")
-        if path is not None:
-            mapping[protein_id] = path
-    return mapping if len(mapping) == len(protein_ids) else {}
-
-
 def _run_crossbeta_batch(
     runner,
     batch_fasta: Path,
@@ -802,7 +768,7 @@ def _run_crossbeta_batch(
         if raw_map:
             return raw_map
         if save_raw_files is not None:
-            raw_map = _archived_crossbeta_outputs(save_raw_files, protein_ids)
+            raw_map = _archived_runner_outputs(save_raw_files, protein_ids, "crossbeta")
             if raw_map:
                 emit(f"[Cross-Beta] batch {batch_label}: loaded raw from {save_raw_files}")
                 return raw_map
@@ -848,13 +814,47 @@ def _discover_crossbeta_raw(work_root: Path, protein_ids: list[str]) -> dict[str
     return mapping if len(mapping) == len(protein_ids) else {}
 
 
-def _archived_crossbeta_outputs(archive_root: Path, protein_ids: list[str]) -> dict[str, Path]:
-    mapping: dict[str, Path] = {}
-    for protein_id in protein_ids:
-        path = _find_archived_raw(archive_root, protein_id, "crossbeta")
-        if path is not None:
-            mapping[protein_id] = path
-    return mapping if len(mapping) == len(protein_ids) else {}
+def _run_aggreprot_batch(
+    runner,
+    batch_fasta: Path,
+    batch_work: Path,
+    protein_ids: list[str],
+    *,
+    skip_run: bool,
+    save_raw_files: Path | None,
+    batch_label: str,
+    emit: LogFn,
+) -> dict[str, Path]:
+    if skip_run:
+        emit(f"[AggreProt] batch {batch_label}: loading raw from {batch_work} …")
+        raw_map = runner.discover_outputs(batch_work, protein_ids)
+        missing = [pid for pid in protein_ids if pid not in raw_map]
+        if not missing:
+            return raw_map
+        if save_raw_files is not None:
+            raw_map = _archived_runner_outputs(save_raw_files, protein_ids, "aggreprot")
+            if raw_map:
+                emit(f"[AggreProt] batch {batch_label}: loaded raw from {save_raw_files}")
+                return raw_map
+        raise FileNotFoundError(
+            f"[AggreProt] batch {batch_label}: expected per-protein CSV under {batch_work} "
+            f"or archived raw under {save_raw_files} (--skip-run)"
+        )
+
+    emit(
+        f"[AggreProt] batch {batch_label}: submitting {len(protein_ids)} sequence(s) "
+        f"to web service …"
+    )
+    output_dir = runner.execute_batch(batch_fasta, batch_work)
+    emit(f"[AggreProt] batch {batch_label}: raw files in {output_dir}")
+
+    raw_map = runner.discover_outputs(output_dir, protein_ids)
+    missing = [pid for pid in protein_ids if pid not in raw_map]
+    if missing:
+        raise FileNotFoundError(
+            f"[AggreProt] batch {batch_label}: missing CSV for: {', '.join(missing)}"
+        )
+    return raw_map
 
 
 def _run_path_batch(
@@ -998,10 +998,15 @@ def _find_archived_raw(archive_root: Path, protein_id: str, predictor_key: str) 
     return matches[0] if matches else None
 
 
-def _archived_appnn_outputs(archive_root: Path, protein_ids: list[str]) -> dict[str, Path]:
+def _archived_runner_outputs(
+    archive_root: Path,
+    protein_ids: list[str],
+    predictor_key: str,
+) -> dict[str, Path]:
+    """Load a full batch of archived raw files for ``--skip-run`` recovery."""
     mapping: dict[str, Path] = {}
     for protein_id in protein_ids:
-        path = _find_archived_raw(archive_root, protein_id, "appnn")
+        path = _find_archived_raw(archive_root, protein_id, predictor_key)
         if path is not None:
             mapping[protein_id] = path
     return mapping if len(mapping) == len(protein_ids) else {}

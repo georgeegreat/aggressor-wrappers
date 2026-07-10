@@ -52,6 +52,7 @@ python -m pytest
 | **PASTA 2.0** | Public web service — no local install ([old.protein.bio.unipd.it/pasta2/](http://old.protein.bio.unipd.it/pasta2/))                            | PASTA                           |
 | **ArchCandy** | Public web service — no local install ([bioinfo.crbm.cnrs.fr/archCandy-input](https://bioinfo.crbm.cnrs.fr/archCandy-input))                  | ArchCandy                       |
 | **Cross-Beta** | Public web service — no local install ([bioinfo.crbm.cnrs.fr/crossBetaPred/](https://bioinfo.crbm.cnrs.fr/crossBetaPred/))                      | Cross-Beta                      |
+| **AggreProt** | Public web service — no local install ([loschmidt.chemi.muni.cz/aggreprot/](https://loschmidt.chemi.muni.cz/aggreprot/))                          | AggreProt                       |
 
 
 **APPNN (R) install** — if system site-library is not writable, packages go to the user library automatically:
@@ -102,7 +103,7 @@ which will show you all commands that can be used. For each of them, simply run
 ```bash
 aggressor-parse --help             # parse one predictor
 aggressor-merge --help             # merge standard CSVs
-aggressor-run --help               # run PATH / APPNN / WALTZ / PASTA / ArchCandy / Cross-Beta
+aggressor-run --help               # run PATH / APPNN / WALTZ / PASTA / ArchCandy / Cross-Beta / AggreProt
 aggressor-widemerge --help        # merge + optional BHT reference check
 
 # or alternatively
@@ -127,7 +128,7 @@ aggressor-parse waltz ... --config /path/to/config.cfg
 
 ### Metascore weight presets
 
-Three presets in `config.cfg` (7 predictors; AggreProt excluded for now):
+Three presets in `config.cfg` (metascore weights for 7 tools; AggreProt merged but not weighted):
 
 
 | Preset                  | Use case                                              |
@@ -155,7 +156,7 @@ Default predictors for the main multifasta command (`aggressor-wrappers FASTA -o
 
 ```ini
 [pipeline]
-predictors = path,appnn,waltz,pasta,archcandy,crossbeta
+predictors = path,appnn,waltz,pasta,archcandy,crossbeta,aggreprot
 ```
 
 Override per run with `--predictors path,appnn` (or any subset).
@@ -531,15 +532,17 @@ Thresholds default from `config.cfg`.
 
 
 
-### `aggreprot` — AggreProt export
+### `aggreprot` — AggreProt web service
 
 
 |                   |                                                                                    |
 | ----------------- | ---------------------------------------------------------------------------------- |
-| **Raw input**     | CSV with header row + columns `position`, `aggregation`, …                         |
+| **Raw input**     | CSV export from API (`position`, `aggregation`, …)                                 |
 | `aggreprot_score` | `aggregation` column                                                               |
-| `aggreprot_bin`   | 1 if aggregation ≥ 0.25                                                            |
-| **CLI**           | `aggressor-parse aggreprot --input aggreprot.csv --fasta protein.fasta -o out.csv` |
+| `aggreprot_bin`   | 1 if aggregation ≥ threshold (default 0.25; live RPL27 BHT bins match at 0.24)   |
+| **CLI**           | `aggressor-run aggreprot --fasta protein.fasta -o out.csv`                         |
+| **Parse only**    | `aggressor-parse aggreprot --input aggreprot.csv --fasta protein.fasta -o out.csv` |
+| **Runner**        | REST API at [loschmidt AggreProt](https://loschmidt.chemi.muni.cz/aggreprot/) — up to 3 sequences/job, unique headers, no structure |
 
 
 
@@ -655,10 +658,17 @@ python -m pytest
 
 ## Manual workflow (parse-only tools)
 
-For AggreProt (no live runner yet), run the main pipeline for
-PATH/APPNN/WALTZ/PASTA/ArchCandy/Cross-Beta, then per-protein `aggressor-parse` and merge:
+For AggreProt (or any parse-only step), run the main pipeline for
+PATH/APPNN/WALTZ/PASTA/ArchCandy/Cross-Beta, then per-protein `aggressor-parse` and merge.
+
+AggreProt can also run standalone or in the batch pipeline:
 
 ```bash
+aggressor-run aggreprot --fasta RPL27.fasta -o RPL27_aggreprot.csv
+aggressor-wrappers proteins.fasta -o results/ --predictors aggreprot
+```
+
+Example merge after manual raw files:
 aggressor-parse crossbeta --input raw/${ID}.json --fasta fasta_split/${ID}.fasta \
   -o output_dir/cross-beta-predictor/parsed/${ID}_cross-beta-predictor.csv
 aggressor-merge output_dir/*/parsed/${ID}_*.csv --fasta fasta_split/${ID}.fasta \
@@ -676,10 +686,10 @@ Or merge with BHT reference check: `aggressor-widemerge --reference …`.
 
 | Phase | Status      | Notes                                                                               |
 | ----- | ----------- | ----------------------------------------------------------------------------------- |
-| **0** | done        | 7 parsers, merge, cache, config, golden tests                                       |
+| **0** | done        | 8 parsers, merge, cache, config, golden tests                                       |
 | **1** | done        | PATH/APPNN runners, multifasta batch, `aggressor-widemerge`                          |
 | **2** | done        | WALTZ web runner (HTTP)                                                               |
-| **3** | in progress | PASTA + ArchCandy + Cross-Beta web runners done; AggreProt next (`legacy/api/`)     |
+| **3** | done        | PASTA + ArchCandy + Cross-Beta + AggreProt web runners                              |
 | **4** | planned     | Aggrescan parser + runner                                                           |
 | **5** | planned     | `aggressor-metascore` CLI, CI on GitHub Actions                                     |
 

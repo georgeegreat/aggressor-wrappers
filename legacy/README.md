@@ -11,7 +11,7 @@ runner integration. **Do not import these modules at runtime** — use
 | `pasta_pipeline.py` | PASTA 2.0 Selenium + tar extract | `runners/pasta.py` (HTTP runner) |
 | `arch_cross_pasta_aggreprot_waltz_parser.ipynb` | Notebook parsers | `predictors/*.py` |
 | `parse_predictor.py` | Thin CLI shim | `aggressor-parse` |
-| `api/aggreprot.py` | Selenium runner | Phase 3 (planned) |
+| `api/aggreprot.py` | Selenium runner (obsolete URL) | `runners/aggreprot.py` |
 | `api/cross_candy.py` | CRBM web runner | Phase 3 (planned) |
 | `api/PASTA 2.0.py` | PASTA Selenium prototype | Superseded by `runners/pasta.py` |
 
