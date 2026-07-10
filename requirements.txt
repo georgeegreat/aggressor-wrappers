@@ -1,0 +1,7 @@
+# Pip dependencies for aggressor-wrappers (runtime).
+# Used by environment.yml and pip install -e .
+
+numpy>=2.0
+pandas>=2.0
+biopython>=1.80
+scikit-learn>=1.3

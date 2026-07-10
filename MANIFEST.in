@@ -1,0 +1,4 @@
+include config.cfg
+include requirements.txt
+include legacy/**
+include vendor/PATH/**

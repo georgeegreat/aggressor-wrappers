@@ -1,0 +1,6 @@
+sequence_name,aminoacid_position,aminoacid,aminoacid_score,hotspot_region
+test_protein,1,M,0.1,0
+test_protein,2,A,0.9,1
+test_protein,3,D,0.2,0
+test_protein,4,K,0.8,1
+test_protein,5,G,0.1,0

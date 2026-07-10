@@ -1,0 +1,5 @@
+# Optional dev / test dependencies.
+-r requirements.txt
+pytest>=7
+ruff>=0.4
+build>=1.2

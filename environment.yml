@@ -1,0 +1,27 @@
+# Conda environment for aggressor_wrappers + vendored PATH (AGGRESSOR tool).
+#
+# New env (recommended):
+#   bash scripts/setup_conda_env.sh
+#   # or manually:
+#   conda env create -f environment.yml
+#   conda activate AGGRESSOR
+#   pip install -e ".[test]"
+#   pip install pyrosetta --find-links https://west.rosettacommons.org/pyrosetta/quarterly/release
+#   export KEY_MODELLER="YOUR_KEY"   # Modeller license — see README
+#
+# Existing env (add missing tools only):
+#   conda activate AGGRESSOR
+#   conda env update -f environment.yml --prune
+#   pip install -e ".[test]"
+
+name: AGGRESSOR
+channels:
+  - salilab
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - modeller=10.8
+  - pip
+  - pip:
+      - -r requirements.txt

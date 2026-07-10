@@ -1,0 +1,24 @@
+>APP_human 
+Positions	Sequence	Average score per residue
+206-211	SDVWWG	94.314381
+>GAPDH_human_iso2 
+Positions	Sequence	Average score per residue
+160-166	ALQNIIP	94.8399424285714
+268-273	LISWYD	98.327759
+>GAPDH_human_iso1 
+Positions	Sequence	Average score per residue
+29-34	DIVAIN	98.327759
+38-49	IDLNYMVYMFQY	97.658863
+202-208	ALQNIIP	94.8399424285714
+310-315	LISWYD	98.327759
+>RPS6_human 
+Positions	Sequence	Average score per residue
+>RPS2_human 
+Positions	Sequence	Average score per residue
+80-86	EIYLFSL	95.652174
+126-134	AFVAIGDYN	98.327759
+>RPL36_human 
+Positions	Sequence	Average score per residue
+>RPL27_human 
+Positions	Sequence	Average score per residue
+73-81	KVYNYNHLM	97.993311

@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aggressor-wrappers"
+version = "0.3.1"
+description = "Unified wrappers for AGGRESSOR amyloidogenicity predictors"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "BHT Amyloid Team" },
+]
+keywords = ["bioinformatics", "amyloid", "protein-aggregation", "predictors"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "biopython>=1.80",
+    "scikit-learn>=1.3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+dev = ["aggressor-wrappers[test]", "ruff>=0.4", "build>=1.2"]
+all = ["aggressor-wrappers[test]"]
+
+# Runtime pip deps are also listed in requirements.txt (used by environment.yml).
+
+[project.scripts]
+aggressor-wrappers = "aggressor_wrappers.cli.app:main"
+aggressor-parse = "aggressor_wrappers.cli.parse:main"
+aggressor-merge = "aggressor_wrappers.cli.merge:main"
+aggressor-run = "aggressor_wrappers.cli.run:main"
+aggressor-widemerge = "aggressor_wrappers.cli.widemerge:main"
+
+[tool.setuptools]
+package-dir = {"aggressor_wrappers" = "src"}
+packages = [
+    "aggressor_wrappers",
+    "aggressor_wrappers.batch",
+    "aggressor_wrappers.cli",
+    "aggressor_wrappers.core",
+    "aggressor_wrappers.predictors",
+    "aggressor_wrappers.runners",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
