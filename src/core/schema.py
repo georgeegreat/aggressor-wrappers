@@ -113,7 +113,26 @@ def get_predictor_spec(name: str) -> PredictorSpec:
 
 @dataclass
 class PredictorResult:
-    """Per-residue output from a single predictor for one protein."""
+    """Per-residue output from a single predictor for one protein.
+
+    ``scores``/``binary`` are the one-scalar-per-residue projection every
+    predictor is reduced to for consensus. Most instruments compute *more* than
+    that, and discarding it silently is the wrapper's main fidelity cost, so two
+    additive channels preserve it:
+
+    ``aux``
+        Extra **per-residue** columns the tool produced alongside its score —
+        e.g. AggreProt's ``sasa`` (solvent accessibility) and ``transmembrane``.
+        Same length as ``sequence``.
+    ``regions``
+        The tool's native **region-level** records, where it predicts segments
+        rather than residues — e.g. ArchCandy's β-arch entries, each carrying a
+        topology string (``GBPL``…), or PASTA's β-pairing partners. These have no
+        per-residue representation at all and are otherwise lost.
+
+    Both default to empty, and ``to_dataframe()`` is unchanged unless
+    ``include_aux=True``, so existing outputs stay byte-identical.
+    """
 
     protein_id: str
     sequence: str
@@ -121,6 +140,8 @@ class PredictorResult:
     scores: list[float]
     binary: list[int]
     metadata: dict[str, Any] = field(default_factory=dict)
+    aux: dict[str, list[Any]] = field(default_factory=dict)
+    regions: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         n = len(self.sequence)
@@ -132,24 +153,42 @@ class PredictorResult:
             raise ValueError(
                 f"{self.spec.key}: expected {n} binary flags, got {len(self.binary)}"
             )
+        for name, values in self.aux.items():
+            if len(values) != n:
+                raise ValueError(
+                    f"{self.spec.key}: aux column {name!r} has {len(values)} "
+                    f"values, expected {n}"
+                )
 
     @property
     def length(self) -> int:
         return len(self.sequence)
 
-    def to_dataframe(self) -> pd.DataFrame:
-        """Standard per-predictor table (1-based ``position``)."""
-        return pd.DataFrame(
-            {
-                "position": range(1, self.length + 1),
-                "aa_name": list(self.sequence),
-                self.spec.score_column: self.scores,
-                self.spec.bin_column: self.binary,
-            }
-        )
+    def to_dataframe(self, *, include_aux: bool = False) -> pd.DataFrame:
+        """Standard per-predictor table (1-based ``position``).
 
-    def to_csv(self, path: str | pd.PathLike[str]) -> None:
-        self.to_dataframe().to_csv(path, index=False)
+        ``include_aux=False`` (default) reproduces the original four columns
+        exactly. ``include_aux=True`` appends the tool's extra per-residue
+        columns, namespaced as ``{key}_{name}`` to avoid collisions on merge.
+        """
+        data = {
+            "position": range(1, self.length + 1),
+            "aa_name": list(self.sequence),
+            self.spec.score_column: self.scores,
+            self.spec.bin_column: self.binary,
+        }
+        frame = pd.DataFrame(data)
+        if include_aux:
+            for name, values in self.aux.items():
+                frame[f"{self.spec.key}_{name}"] = values
+        return frame
+
+    def regions_dataframe(self) -> pd.DataFrame:
+        """The tool's native region records, or an empty frame if it has none."""
+        return pd.DataFrame(self.regions)
+
+    def to_csv(self, path: str | pd.PathLike[str], *, include_aux: bool = False) -> None:
+        self.to_dataframe(include_aux=include_aux).to_csv(path, index=False)
 
 
 def standard_columns(spec: PredictorSpec) -> tuple[str, str]:
