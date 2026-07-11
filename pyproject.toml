@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aggressor-wrappers"
-version = "0.3.2"
+dynamic = ["version"]
 description = "Unified wrappers for AGGRESSOR amyloidogenicity predictors"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +40,12 @@ aggressor-parse = "aggressor_wrappers.cli.parse:main"
 aggressor-merge = "aggressor_wrappers.cli.merge:main"
 aggressor-run = "aggressor_wrappers.cli.run:main"
 aggressor-widemerge = "aggressor_wrappers.cli.widemerge:main"
+
+[tool.setuptools.dynamic]
+# Single source of truth for the version: src/__init__.py.
+# Previously declared in BOTH pyproject.toml and src/__init__.py, which drifts
+# silently and breaks tag-vs-package verification on release.
+version = { attr = "aggressor_wrappers.__version__" }
 
 [tool.setuptools]
 package-dir = {"aggressor_wrappers" = "src"}
