@@ -23,6 +23,7 @@ such changes are always listed under **Changed** with a migration note.
 
 ## [0.4.0] — 2026-07-11
 
+
 First release with a changelog. Three themes: predictors now run concurrently,
 the metascore is pluggable and no longer silently mis-combines its inputs, and
 the wrappers stop discarding each instrument's distinctive output.
@@ -76,6 +77,7 @@ the wrappers stop discarding each instrument's distinctive output.
   already scale-free and polarity-correct.
 - Tests: `test_scheduler.py`, `test_metascore_plugins.py`, `test_fidelity.py`,
   `test_amyloscope_export.py` (21 new tests; suite now 104 passed, 9 skipped).
+- CI, the homoglyph guard, the tag/version check, .gitattributes
 
 ### Fixed
 
@@ -99,6 +101,7 @@ the wrappers stop discarding each instrument's distinctive output.
   whenever summing inflates a residue above the best single arch, and names
   `score_mode = "highest"` as the fix. **The default is unchanged**, because
   changing it would alter every number produced so far; see *Deprecated*.
+- the Cyrillic с import in waltz.py
 
 ### Changed
 
@@ -111,6 +114,7 @@ the wrappers stop discarding each instrument's distinctive output.
   declares `dynamic = ["version"]`. It was previously declared in *both* files
   (`0.3.2` in each), which drifts silently and breaks tag-vs-package
   verification at release time.
+- **BREAKING**: PATH removed from the default predictor set (with the re-enable instructions)
 
 ### Deprecated
 
