@@ -1,0 +1,251 @@
+"""Pluggable metascore methods.
+
+``core.metascore.compute_weighted_metascore`` implements exactly one combiner —
+a linear weighted sum of *raw* predictor score columns — and
+``core.metascore`` already raises ``NotImplementedError`` for any other
+``[metascore] method``. That is the natural seam for pluggability, and this
+module turns it into a registry so an external consensus (e.g. amyloscope's
+tiered fractional consensus, or a Z-score consensus) can be dropped in without
+editing pipeline code.
+
+Two defects in the raw weighted sum motivate the built-ins below. Both are
+properties of the code and config, not of any particular dataset:
+
+**Scale incommensurability.** The panel's score columns live on mutually
+incomparable scales — WALTZ and PATH on 0–100, APPNN/CrossBeta/ArchCandy on
+0–1, Aggrescan on roughly ±1, PASTA on a pairing free-energy scale of about
+−8–0. Summing raw values means the contribution of each predictor is set by its
+units rather than by its weight: with the shipped ``predictor_specificity``
+preset, WALTZ spans ~22 metascore units while ArchCandy spans ~0.05, a ratio of
+several hundred. The declared weights therefore do not express what they appear
+to express, and the three shipped presets rank residues near-identically
+(Spearman rho ~0.997–1.000) because the weights are swamped by scale.
+
+**Polarity inversion.** PASTA reports a pairing free energy in which *lower*
+(more negative) means more amyloidogenic; the package encodes this correctly at
+binarisation time (``predictors/pasta.py`` passes ``greater_or_equal=False``,
+and ``PredictorSpec.default_threshold`` for PASTA is −5.0). But
+``PredictorSpec`` carries no direction field, so the weighted sum adds
+``pasta_score * (+0.15)``: a strongly amyloidogenic PASTA signal *lowers* the
+metascore. The tool's evidence enters with the wrong sign, which is a
+correctness bug rather than a simplification — removing PASTA from the panel
+measurably improves discrimination relative to including it.
+
+Both are avoided by combining on a *comparable* footing: either standardise the
+scores and apply an explicit polarity (``zscore_consensus``), or discard the
+magnitudes entirely and combine the per-tool binary calls, which each tool's own
+parser already produced with the correct rule and direction
+(``fractional_consensus``). The latter is scale-free and polarity-correct *by
+construction*, and is the model amyloscope uses.
+"""
+
+from __future__ import annotations
+
+from typing import Callable, Protocol
+
+import pandas as pd
+
+from aggressor_wrappers.core.config import AppConfig, load_config
+from aggressor_wrappers.core.schema import PREDICTOR_REGISTRY, get_predictor_spec
+
+# --------------------------------------------------------------------------- #
+# Predictor polarity.
+#
+# This belongs in ``PredictorSpec`` (which has ``default_threshold`` but no
+# direction). It is kept here so this module stays a purely additive overlay;
+# fold it into schema.py when convenient.
+#
+# True  -> higher score = more amyloidogenic
+# False -> lower  score = more amyloidogenic (PASTA pairing free energy)
+# --------------------------------------------------------------------------- #
+HIGHER_IS_AMYLOIDOGENIC: dict[str, bool] = {
+    "aggreprot": True,
+    "aggrescan": True,
+    "appnn": True,
+    "archcandy": True,
+    "crossbeta": True,
+    "pasta": False,
+    "path": True,
+    "waltz": True,
+}
+
+
+def polarity(key: str) -> int:
+    """+1 if higher score means more amyloidogenic, -1 if inverted."""
+    return 1 if HIGHER_IS_AMYLOIDOGENIC.get(key, True) else -1
+
+
+class MetascoreFn(Protocol):
+    def __call__(
+        self,
+        wide_df: pd.DataFrame,
+        *,
+        config: AppConfig,
+        weights: dict[str, float] | None = None,
+    ) -> pd.Series: ...
+
+
+METASCORE_REGISTRY: dict[str, MetascoreFn] = {}
+
+
+def register_metascore(name: str) -> Callable[[MetascoreFn], MetascoreFn]:
+    """Register a metascore method under ``[metascore] method = <name>``.
+
+    External code (e.g. an amyloscope-backed consensus) can register its own
+    combiner without modifying this package::
+
+        from aggressor_wrappers.core.metascore_plugins import register_metascore
+
+        @register_metascore("amyloscope_consensus")
+        def my_consensus(wide_df, *, config, weights=None):
+            ...
+            return pd.Series(...)
+    """
+
+    def decorator(fn: MetascoreFn) -> MetascoreFn:
+        METASCORE_REGISTRY[name] = fn
+        return fn
+
+    return decorator
+
+
+def available_methods() -> list[str]:
+    return sorted(METASCORE_REGISTRY)
+
+
+def compute_metascore(
+    wide_df: pd.DataFrame,
+    *,
+    config: AppConfig | None = None,
+    weights: dict[str, float] | None = None,
+    method: str | None = None,
+) -> pd.Series:
+    """Dispatch to the configured metascore method."""
+    cfg = config or load_config()
+    name = method or cfg.metascore.method
+    if name not in METASCORE_REGISTRY:
+        raise NotImplementedError(
+            f"Metascore method {name!r} is not registered. "
+            f"Available: {available_methods()}"
+        )
+    return METASCORE_REGISTRY[name](wide_df, config=cfg, weights=weights)
+
+
+def _active_weights(cfg: AppConfig, weights: dict[str, float] | None) -> dict[str, float]:
+    active = weights or cfg.metascore.weights
+    if not active:
+        raise ValueError("No metascore weights configured")
+    return active
+
+
+def _score_columns(wide_df: pd.DataFrame, keys) -> dict[str, str]:
+    """Map predictor key -> score column, keeping only columns present."""
+    out = {}
+    for key in keys:
+        col = get_predictor_spec(key).score_column
+        if col in wide_df.columns:
+            out[key] = col
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Built-in methods
+# --------------------------------------------------------------------------- #
+
+
+@register_metascore("weighted_sum")
+def weighted_sum(
+    wide_df: pd.DataFrame,
+    *,
+    config: AppConfig,
+    weights: dict[str, float] | None = None,
+) -> pd.Series:
+    """The original raw weighted sum, kept for backward compatibility.
+
+    Retained so existing outputs remain reproducible. Prefer
+    ``zscore_consensus`` or ``fractional_consensus``: this combiner is dominated
+    by the widest-scaled predictor and adds PASTA with an inverted sign.
+    """
+    from aggressor_wrappers.core.metascore import compute_weighted_metascore
+
+    return compute_weighted_metascore(wide_df, config=config, weights=weights)
+
+
+@register_metascore("zscore_consensus")
+def zscore_consensus(
+    wide_df: pd.DataFrame,
+    *,
+    config: AppConfig,
+    weights: dict[str, float] | None = None,
+) -> pd.Series:
+    """Polarity-corrected, standardised weighted consensus.
+
+    Each predictor's score column is standardised to zero mean and unit variance
+    over the table, multiplied by its polarity (+1, or −1 for PASTA), and then
+    combined with the configured weights. Standardisation puts every tool on a
+    comparable footing, so the weights finally mean what they claim to; the
+    polarity term stops an inverted-scale tool from subtracting its own evidence.
+
+    Degenerate (zero-variance) columns contribute nothing rather than producing
+    NaNs — a tool that fired nowhere on this protein carries no information.
+    """
+    active = _active_weights(config, weights)
+    cols = _score_columns(wide_df, active)
+    if not cols:
+        raise ValueError("None of the configured weight columns are present in wide_df")
+
+    total = pd.Series(0.0, index=wide_df.index)
+    used = 0.0
+    for key, col in cols.items():
+        series = wide_df[col].astype(float)
+        sd = series.std()
+        if not sd or pd.isna(sd):
+            continue  # zero variance carries no signal
+        z = (series - series.mean()) / sd
+        total = total + z * polarity(key) * active[key]
+        used += active[key]
+
+    if used == 0:
+        raise ValueError("All configured predictors had zero variance")
+    return total / used
+
+
+@register_metascore("fractional_consensus")
+def fractional_consensus(
+    wide_df: pd.DataFrame,
+    *,
+    config: AppConfig,
+    weights: dict[str, float] | None = None,
+) -> pd.Series:
+    """Fraction of the panel calling each residue amyloidogenic.
+
+    Combines the per-tool ``{predictor}_bin`` columns rather than the raw
+    scores. Those binary calls were produced by each tool's own parser using its
+    own threshold *and* its own direction (``binary_from_scores(...,
+    greater_or_equal=...)``), so this combiner is scale-free and
+    polarity-correct by construction — the two failure modes of the raw weighted
+    sum cannot arise.
+
+    With uniform weights this is exactly the evidence-count consensus that
+    amyloscope tiers into unanimous / strong / moderate regions; supplying
+    weights yields a confidence-weighted fraction on the same 0–1 scale.
+    """
+    active = weights if weights is not None else config.metascore.weights
+    keys = list(active) if active else list(PREDICTOR_REGISTRY)
+
+    total = pd.Series(0.0, index=wide_df.index)
+    used = 0.0
+    for key in keys:
+        col = get_predictor_spec(key).bin_column
+        if col not in wide_df.columns:
+            continue
+        weight = float(active[key]) if active else 1.0
+        total = total + wide_df[col].astype(float).clip(0, 1) * weight
+        used += weight
+
+    if used == 0:
+        raise ValueError(
+            "No {predictor}_bin columns present; fractional_consensus needs the "
+            "binarised calls (run merge, or use zscore_consensus on raw scores)"
+        )
+    return total / used
