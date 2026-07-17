@@ -113,3 +113,4 @@ def test_metascore_presets_configured() -> None:
     for name in names:
         total = sum(cfg.metascore.presets[name].values())
         assert 0.999 <= total <= 1.001
+

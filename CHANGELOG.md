@@ -11,11 +11,9 @@ such changes are always listed under **Changed** with a migration note.
 
 ### Removed
 
-- **`weighted_sum` metascore method.** Raw linear sums of incomparable score columns
-  mis-ranked residues (scale dominance, inverted PASTA polarity). Use
-  `zscore_consensus` (default) or `fractional_consensus`.
-- **Accidental duplicate files** `pipeline 2.py`, `schema 2.py`, `merge 2.py` from the
-  merge — superseded by the main modules; do not use.
+- **Metascore weight presets** (`[metascore.presets.*]`, `preset`, `AGGRESSOR_METASCORE_PRESET`).
+  Combiners now use equal weight over predictors present in the merged table.
+- **`scripts/calibrate_weights.py`** (least-squares fit for removed weighted-sum workflow).
 
 ### Changed
 

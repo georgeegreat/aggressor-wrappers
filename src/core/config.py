@@ -26,6 +26,8 @@ class CacheConfig:
 
 @dataclass
 class MetascoreConfig:
+    """Metascore combiner and active weight preset from ``config.cfg``."""
+
     method: str = "zscore_consensus"
     preset: str = DEFAULT_METASCORE_PRESET
     presets: dict[str, dict[str, float]] = field(default_factory=dict)

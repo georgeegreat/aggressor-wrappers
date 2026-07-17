@@ -3,8 +3,10 @@
 ``[metascore] method`` in ``config.cfg`` selects a registered combiner from
 ``METASCORE_REGISTRY``. Two built-ins ship with the package:
 
-* ``zscore_consensus`` — standardise score columns, apply polarity, then weight.
-* ``fractional_consensus`` — combine per-tool ``{predictor}_bin`` columns.
+* ``zscore_consensus`` — standardise score columns, apply polarity, combine with
+  preset weights (after standardisation the weights express model confidence).
+* ``fractional_consensus`` — weighted mean of ``{predictor}_bin`` columns using
+  the same preset weights (renormalised over predictors present).
 
 External consensus functions (e.g. amyloscope-backed tiering) can register via
 ``@register_metascore`` without editing pipeline code.
@@ -12,8 +14,7 @@ External consensus functions (e.g. amyloscope-backed tiering) can register via
 Why not a raw weighted sum of score columns? The panel's scales are
 incommensurable (WALTZ/PATH 0–100 vs APPNN 0–1 vs PASTA free energy), and PASTA
 is polarity-inverted at binarisation time but has no direction field on
-``PredictorSpec``. A linear sum therefore mis-ranks residues and was removed in
-favour of the two combiners above.
+``PredictorSpec``. ``zscore_consensus`` fixes both issues before applying weights.
 """
 
 from __future__ import annotations
@@ -140,10 +141,9 @@ def zscore_consensus(
     """Polarity-corrected, standardised weighted consensus.
 
     Each predictor's score column is standardised to zero mean and unit variance
-    over the table, multiplied by its polarity (+1, or −1 for PASTA), and then
-    combined with the configured weights. Standardisation puts every tool on a
-    comparable footing, so the weights finally mean what they claim to; the
-    polarity term stops an inverted-scale tool from subtracting its own evidence.
+    over the table, multiplied by its polarity (+1, or −1 for PASTA), then
+    combined with weights from the active metascore preset (renormalised over
+    predictors present in ``wide_df``).
 
     Degenerate (zero-variance) columns contribute nothing rather than producing
     NaNs — a tool that fired nowhere on this protein carries no information.
@@ -182,12 +182,10 @@ def fractional_consensus(
     scores. Those binary calls were produced by each tool's own parser using its
     own threshold *and* its own direction (``binary_from_scores(...,
     greater_or_equal=...)``), so this combiner is scale-free and
-    polarity-correct by construction — the two failure modes of the raw weighted
-    sum cannot arise.
+    polarity-correct by construction.
 
-    With uniform weights this is exactly the evidence-count consensus that
-    amyloscope tiers into unanimous / strong / moderate regions; supplying
-    weights yields a confidence-weighted fraction on the same 0–1 scale.
+    With preset weights this is a confidence-weighted fraction on the 0–1 scale;
+    weights are renormalised over ``{predictor}_bin`` columns present.
     """
     active = weights if weights is not None else config.metascore.weights
     keys = list(active) if active else list(PREDICTOR_REGISTRY)

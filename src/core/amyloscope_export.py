@@ -39,6 +39,8 @@ import pandas as pd
 
 from aggressor_wrappers.core.schema import PREDICTOR_REGISTRY, get_predictor_spec
 
+TRACK_COLUMNS = ("Number", "Residue", "Score", "APR")
+
 DEFAULT_TIERS = [
     ("unanimous", 1.0, "#B2182B"),
     ("strong", 0.75, "#2166AC"),
@@ -86,6 +88,46 @@ def export_protein(
         track.to_csv(dest, index=False)
         written[key] = dest
     return written
+
+
+def parse_aggressor_track(path: Path, sequence: str = "") -> pd.DataFrame:
+    """Parse a per-predictor track CSV written by :func:`export_protein`."""
+    del sequence  # sequence is carried in config.yaml for amyloscope proteins
+    df = pd.read_csv(path)
+    missing = [col for col in TRACK_COLUMNS if col not in df.columns]
+    if missing:
+        raise ValueError(f"{path}: expected columns {TRACK_COLUMNS}, missing {missing}")
+    out = df[list(TRACK_COLUMNS)].copy()
+    out["Number"] = out["Number"].astype(int)
+    out["Score"] = out["Score"].astype(float)
+    out["Residue"] = out["Residue"].astype(str)
+    return out.sort_values("Number").reset_index(drop=True)
+
+
+def register_amyloscope_adapter() -> bool:
+    """
+    Register the ``aggressor`` track parser with amyloscope if installed.
+
+    amyloscope does not ship this adapter yet; call once before ``amyloscope run``
+    on configs emitted by :func:`export_run`.
+    """
+    try:
+        from amyloscope.io.adapters import register_adapter
+    except ImportError:
+        return False
+
+    @register_adapter("aggressor")
+    def _parse_aggressor(path: Path, sequence: str = "") -> pd.DataFrame:
+        return parse_aggressor_track(path, sequence)
+
+    return True
+
+
+def _protein_id_from_merged_path(path: Path) -> str:
+    stem = path.stem
+    if stem.endswith("_merged"):
+        return stem[: -len("_merged")]
+    return stem
 
 
 def build_amyloscope_config(
@@ -171,16 +213,18 @@ def export_run(
     proteins: dict[str, dict] = {}
     predictors: set[str] = set()
     for csv in csvs:
-        pid = csv.stem
-        written = export_protein(csv, pid, out_root)
+        protein_id = _protein_id_from_merged_path(csv)
+        written = export_protein(csv, protein_id, out_root)
         predictors.update(written)
         df = pd.read_csv(csv)
         meta: dict = {"length": int(df["position"].max())}
-        if sequences and pid in sequences:
-            meta["sequence"] = sequences[pid]
+        if sequences and protein_id in sequences:
+            meta["sequence"] = sequences[protein_id]
         elif "aa_name" in df.columns:
             meta["sequence"] = "".join(df["aa_name"].astype(str))
-        proteins[pid] = meta
+        proteins[protein_id] = meta
+
+    register_amyloscope_adapter()
 
     ordered = [k for k in PREDICTOR_REGISTRY if k in predictors]
     return build_amyloscope_config(proteins, ordered, out_root, name=name)

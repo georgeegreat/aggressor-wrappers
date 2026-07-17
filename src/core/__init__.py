@@ -1,7 +1,14 @@
 """Core package exports."""
 
 from aggressor_wrappers.core.cache import raw_cache_path, store_raw_cache
-from aggressor_wrappers.core.config import load_config, predictor_options, runner_options
+from aggressor_wrappers.core.config import (
+    default_pipeline_predictors,
+    list_metascore_presets,
+    load_config,
+    predictor_options,
+    reload_config,
+    runner_options,
+)
 from aggressor_wrappers.core.fasta import read_fasta, read_first_sequence
 from aggressor_wrappers.core.merge import (
     merge_predictor_tables,
@@ -26,7 +33,9 @@ __all__ = [
     "PredictorSpec",
     "available_methods",
     "compute_metascore",
+    "default_pipeline_predictors",
     "get_predictor_spec",
+    "list_metascore_presets",
     "load_config",
     "merge_predictor_tables",
     "merge_standard_csv_files",
@@ -36,6 +45,7 @@ __all__ = [
     "read_fasta",
     "read_first_sequence",
     "read_standard_csv",
+    "reload_config",
     "resolve_predictor_key",
     "runner_options",
     "store_raw_cache",

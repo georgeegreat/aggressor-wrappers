@@ -1,4 +1,4 @@
-"""Tests for metascore weight presets and widemerge reference validation."""
+"""Tests for config defaults and widemerge reference validation."""
 
 from __future__ import annotations
 
@@ -30,6 +30,12 @@ def test_pathogenic_amyloid_preset_weights() -> None:
     weights = load_config().metascore.presets["pathogenic_amyloids"]
     assert weights["crossbeta"] == pytest.approx(0.20)
     assert sum(weights.values()) == pytest.approx(1.0)
+
+
+def test_metascore_method_from_config() -> None:
+    cfg = load_config()
+    assert cfg.metascore.method == "zscore_consensus"
+    assert cfg.metascore.preset == "predictor_specificity"
 
 
 def test_widemerge_reference_self_compare(tmp_path: Path) -> None:

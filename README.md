@@ -31,8 +31,8 @@ pip install -e ".[test]"
 ```
 
 The environment is named `AGGRESSOR`. Core deps: numpy, pandas, biopython, scikit-learn.
-Modeller and PyRosetta are listed in `environment.yml` for **PATH** users only; the default
-pipeline does not need them.
+Modeller and PyRosetta are **not** required for the default panel; install them only when
+you add `path` to `[pipeline] predictors` (see [Optional: PATH](#optional-path-structure-based-predictor)).
 
 Python-only deps are declared in `pyproject.toml`; installation of external tools is described below.
 
@@ -89,18 +89,26 @@ PATH is the only structure-based tool in the panel and the only one requiring **
 licensed dependencies (Modeller + PyRosetta). It is **not** in the default `[pipeline]`
 predictors list so the package installs and runs in CI without those licences.
 
-To include PATH in a run:
+**Recommended order:**
+
+1. Install the default stack (`pip install -e ".[test]"`, R packages for APPNN).
+2. If you want PATH: install Modeller + PyRosetta and set `KEY_MODELLER` (see above).
+3. Add `path` to `[pipeline] predictors` in `config.cfg` — no code changes, no extra
+   pip extra, and no CLI flags required:
 
 ```ini
-# config.cfg — add path to the list, or pass --predictors on the CLI
 [pipeline]
 predictors = path,appnn,waltz,pasta,archcandy,crossbeta,aggreprot
 ```
 
+Then run as usual:
+
 ```bash
-aggressor-wrappers proteins.fasta -o output_dir/ --predictors path,appnn,waltz,pasta,archcandy,crossbeta,aggreprot
-aggressor-run path --fasta protein.fasta -o protein_PATH.csv
+aggressor-wrappers proteins.fasta -o output_dir/
+aggressor-run path --fasta protein.fasta -o protein_PATH.csv   # single-protein PATH only
 ```
+
+Optional override for one run: `--predictors path,appnn,...` (defaults come from `config.cfg`).
 
 PATH threading is slow; use `--skip-run` when `results.csv` already exists.
 
@@ -153,41 +161,37 @@ aggressor-parse waltz ... --config /path/to/config.cfg
 
 
 
-### Metascore methods and weight presets
+### Metascore methods
 
 Two combiners are implemented; select with `[metascore] method` in `config.cfg`:
 
 | Method | Default | What it does |
 | ------ | ------- | ------------ |
-| `zscore_consensus` | **yes** | Standardise each `{Tool}_score` column, apply polarity (+1, or −1 for PASTA), combine with preset weights |
-| `fractional_consensus` | | Combine `{Tool}_bin` columns — scale-free, polarity-correct by construction |
+| `zscore_consensus` | **yes** | Standardise each `{Tool}_score`, apply polarity (+1, or −1 for PASTA), weighted mean using the active preset |
+| `fractional_consensus` | | Weighted mean of `{Tool}_bin` columns (same presets, renormalised); scale-free, polarity-correct |
 
-The raw weighted sum of score columns was removed: predictor scales are incomparable
-(WALTZ 0–100 vs APPNN 0–1 vs PASTA free energy) and PASTA's inverted polarity was not
-represented on `PredictorSpec`.
+Select the combiner with `[metascore] method` and the weight profile with `[metascore] preset`
+(or `AGGRESSOR_METASCORE_PRESET`). Presets apply **after** z-score standardisation in
+`zscore_consensus`, so the weights express model confidence on comparable scales.
 
-Three weight presets tune relative confidence when using `zscore_consensus`
-(AggreProt is merged but not weighted yet):
+```ini
+[metascore]
+method = zscore_consensus
+preset = predictor_specificity   # functional_amyloids | pathogenic_amyloids
 
-| Preset                  | Use case                                              |
-| ----------------------- | ----------------------------------------------------- |
-| `functional_amyloids`   | WALTZ/PATH/APPNN/PASTA emphasis                       |
-| `pathogenic_amyloids`   | Cross-Beta/APPNN emphasis                             |
-| `predictor_specificity` | **default** — conservative, tool-specificity oriented |
-
-Active preset: `[metascore].preset`. Override method per call in Python via
-`compute_metascore(..., method="fractional_consensus")`.
-
-Preset weights can be calibrated against reference metascore tables (for
-`zscore_consensus`):
-
-```bash
-python scripts/calibrate_weights.py \
-  --merged-csv /path/to/merged.csv \
-  --metascore-csv /path/to/reference/metascore/table.csv
+[metascore.presets.predictor_specificity]
+waltz = 0.22
+path = 0.20
+appnn = 0.19
+# … (see config.cfg)
 ```
 
-Paste the printed snippet into a new table under `[metascore.presets.*]`.
+AggreProt is in the default pipeline but not yet in shipped presets (equal implicit weight
+zero until a preset entry is added). For tiered cross-predictor consensus and figures,
+export to **amyloscope** (see below).
+
+Override method per call in Python: `compute_metascore(wide, method="fractional_consensus")`.
+Calibrate or inspect presets: `python scripts/calibrate_weights.py`.
 
 ### `[pipeline]`
 
@@ -199,7 +203,7 @@ predictors = appnn,waltz,pasta,archcandy,crossbeta,aggreprot
 predictor_jobs = 4   # run up to 4 predictors concurrently; set 1 for sequential
 ```
 
-Override per run: `--predictors appnn,waltz` or any subset including `path`.
+Override per run: `--predictors appnn,waltz` or any subset (including `path` if configured).
 
 ### `[runners.waltz]` / `[runners.pasta]`
 
@@ -315,13 +319,29 @@ Layout: `cache/{protein_id}/{predictor}/raw.{ext}` — removed after each run un
 ```
 multifasta FASTA
         ↓  aggressor-wrappers (default: APPNN + 5 web predictors, concurrent)
-        ↓  optional: aggressor-run path / --predictors path,…
+        ↓  optional: add `path` to `[pipeline] predictors` in config.cfg (Modeller + PyRosetta)
 standard CSV per predictor   (+ optional raw cache)
         ↓  aggressor-merge  (or aggressor-widemerge with --reference)
 wide CSV (position, aa_name, all predictors)
         ↓  compute_metascore (zscore_consensus or fractional_consensus)
-metascore column / downstream (e.g. amyloscope export)
+metascore column / downstream analysis via amyloscope export
 ```
+
+### amyloscope handoff
+
+After `aggressor-wrappers` produces `merged/{id}_merged.csv`, export per-tool tracks
+for [amyloscope](https://github.com/sukhanovaxenia/amyloscope) consensus and figures:
+
+```python
+from aggressor_wrappers.core.amyloscope_export import export_run
+
+export_run(Path("output_dir/merged"), Path("output_dir/amyloscope"))
+# -> output_dir/amyloscope/config.yaml + tracks/{predictor}/{id}.csv
+# then: amyloscope run output_dir/amyloscope/config.yaml
+```
+
+`export_run` registers the ``aggressor`` track adapter with amyloscope when it is
+installed. APR flags come from upstream `{predictor}_bin` columns (correct polarity).
 
 ---
 
@@ -674,10 +694,10 @@ aggressor_wrappers/              ← repo / project root (clone this folder)
 ├── legacy/                   frozen BHT reference scripts
 ├── setup_conda_env.sh          create/update conda env AGGRESSOR
 ├── scripts/
-│   └── calibrate_weights.py
+│   └── (utility scripts as needed)
 ├── src/                      importable package `aggressor_wrappers`
 │   ├── batch/                multifasta pipeline
-│   ├── core/                 schema, config, cache, fasta, merge, validate, metascore
+│   ├── core/                 schema, config, cache, fasta, merge, metascore, amyloscope_export
 │   ├── predictors/           parser modules (all predictors)
 │   ├── runners/              PATH / APPNN / WALTZ / PASTA / ArchCandy / Cross-Beta execution
 │   └── cli/                  parse, merge, run, batch, widemerge, app
@@ -710,8 +730,8 @@ python -m pytest
 ## Manual workflow (parse-only tools)
 
 For AggreProt or other parse-only steps, run the default panel first, then
-per-protein `aggressor-parse` and merge. Add PATH with `--predictors path,…` when
-Modeller/PyRosetta licences are available.
+per-protein `aggressor-parse` and merge. Add `path` to `[pipeline] predictors` in
+`config.cfg` when Modeller/PyRosetta licences are available.
 
 AggreProt can also run standalone or in the batch pipeline:
 
