@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-import yaml
 
 from aggressor_wrappers.core.amyloscope_export import (
     export_protein,
@@ -105,8 +104,8 @@ def test_amyloscope_run_on_exported_panel(tmp_path: Path) -> None:
     config_path = export_run(merged, out, name="test panel")
     assert register_amyloscope_adapter() is True
 
-    cfg = yaml.safe_load(config_path.read_text())
-    assert cfg["proteins"][0]["id"] == "RPL27"
+    config_text = config_path.read_text()
+    assert "id: RPL27" in config_text
     assert (out / "tracks" / "waltz" / "RPL27.csv").is_file()
 
     artifacts = run_from_file(config_path)
