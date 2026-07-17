@@ -1,8 +1,12 @@
-# aggressor-wrappers (aka Wrappers for AGGRESSOR)
+# aggressor-wrappers
 
-Installable Python package that normalises per-residue outputs from amyloidogenicity  
+Installable Python package (v0.4.0) that normalises per-residue outputs from amyloidogenicity  
 predictors into one schema (`position`, `aa_name`, `{Tool}_score`, `{Tool}_bin`) and  
 merges them into wide CSV tables for metascores and downstream analysis.
+
+**Default multifasta panel** (no licensed structure tools): APPNN, WALTZ, PASTA, ArchCandy,
+Cross-Beta, AggreProt — all runnable after `pip install -e ".[test]"` plus R for APPNN.
+**PATH is opt-in** (requires Modeller + PyRosetta licences); see [Optional: PATH](#optional-path-structure-based-predictor).
 
 ## Install
 
@@ -26,9 +30,11 @@ conda activate AGGRESSOR
 pip install -e ".[test]"
 ```
 
-The environment is named AGGRESSOR and includes numpy, pandas, biopython, scikit-learn, modeller, pyrosetta and some R packages. 
+The environment is named `AGGRESSOR`. Core deps: numpy, pandas, biopython, scikit-learn.
+Modeller and PyRosetta are listed in `environment.yml` for **PATH** users only; the default
+pipeline does not need them.
 
-Python-only deps are declared in `pyproject.toml`; Installation of external tools are described below
+Python-only deps are declared in `pyproject.toml`; installation of external tools is described below.
 
 ### Verify
 
@@ -43,16 +49,16 @@ python -m pytest
 ### External tools
 
 
-| Tool          | Install                                                                                                                                         | Used by                         |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| **Modeller**  | `conda install -c salilab modeller` (in `environment.yml`)                                                                                      | PATH (`vendor/PATH/path1.1.py`) |
-| **PyRosetta** | `pip install pyrosetta --find-links https://west.rosettacommons.org/pyrosetta/quarterly/release` or [pyrosetta.org](https://www.pyrosetta.org/) | PATH                            |
-| **APPNN** (R) | R + CRAN package `appnn` (+ `dplyr`, `tidyr`, `readr`, `stringr`, `purrr`); runner calls `legacy/appnn_converter.R`                             | APPNN                           |
-| **WALTZ**     | Public web service — no local install ([waltz.switchlab.org](https://waltz.switchlab.org/))                                                    | WALTZ                           |
-| **PASTA 2.0** | Public web service — no local install ([old.protein.bio.unipd.it/pasta2/](http://old.protein.bio.unipd.it/pasta2/))                            | PASTA                           |
-| **ArchCandy** | Public web service — no local install ([bioinfo.crbm.cnrs.fr/archCandy-input](https://bioinfo.crbm.cnrs.fr/archCandy-input))                  | ArchCandy                       |
-| **Cross-Beta** | Public web service — no local install ([bioinfo.crbm.cnrs.fr/crossBetaPred/](https://bioinfo.crbm.cnrs.fr/crossBetaPred/))                      | Cross-Beta                      |
-| **AggreProt** | Public web service — no local install ([loschmidt.chemi.muni.cz/aggreprot/](https://loschmidt.chemi.muni.cz/aggreprot/))                          | AggreProt                       |
+| Tool           | Install                                                                                                                                       | Used by                       | Default panel |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- | ------------- |
+| **APPNN** (R)  | R + CRAN package `appnn` (+ `dplyr`, `tidyr`, `readr`, `stringr`, `purrr`); runner calls `legacy/appnn_converter.R`                             | APPNN                         | yes           |
+| **WALTZ**      | Public web service — no local install ([waltz.switchlab.org](https://waltz.switchlab.org/))                                                   | WALTZ                         | yes           |
+| **PASTA 2.0**  | Public web service — no local install ([old.protein.bio.unipd.it/pasta2/](http://old.protein.bio.unipd.it/pasta2/))                           | PASTA                         | yes           |
+| **ArchCandy**  | Public web service — no local install ([bioinfo.crbm.cnrs.fr/archCandy-input](https://bioinfo.crbm.cnrs.fr/archCandy-input))                  | ArchCandy                     | yes           |
+| **Cross-Beta** | Public web service — no local install ([bioinfo.crbm.cnrs.fr/crossBetaPred/](https://bioinfo.crbm.cnrs.fr/crossBetaPred/))                    | Cross-Beta                    | yes           |
+| **AggreProt**  | Public web service — no local install ([loschmidt.chemi.muni.cz/aggreprot/](https://loschmidt.chemi.muni.cz/aggreprot/))                      | AggreProt                     | yes           |
+| **Modeller**   | `conda install -c salilab modeller` (in `environment.yml`)                                                                                      | PATH only                     | no            |
+| **PyRosetta**  | `pip install pyrosetta --find-links https://west.rosettacommons.org/pyrosetta/quarterly/release` or [pyrosetta.org](https://www.pyrosetta.org/) | PATH only                     | no            |
 
 
 **APPNN (R) install** — if system site-library is not writable, packages go to the user library automatically:
@@ -64,18 +70,39 @@ Rscript -e 'library(appnn); cat("appnn OK\n")'
 
 For how to install and use Rscript and other R packages, please use [https://cran.r-project.org/](https://cran.r-project.org/)
 
-**Modeller license** (required for PATH live runs):
+**Modeller license** (required only for **PATH** live runs — not for the default pipeline):
 
 ```bash
 export KEY_MODELLER="YOUR_LICENSE_KEY"    # add to ~/.bashrc
 ```
 
-Edit `$CONDA_PREFIX/lib/modeller-10.8/modlib/modeller/config.py`:
+If you use PATH, edit `$CONDA_PREFIX/lib/modeller-10.8/modlib/modeller/config.py`:
 
 ```python
 install_dir = r'/path/to/anaconda3/envs/AGGRESSOR/lib/modeller-10.8'
 license = r'YOUR_LICENSE_KEY'
 ```
+
+### Optional: PATH (structure-based predictor)
+
+PATH is the only structure-based tool in the panel and the only one requiring **two**
+licensed dependencies (Modeller + PyRosetta). It is **not** in the default `[pipeline]`
+predictors list so the package installs and runs in CI without those licences.
+
+To include PATH in a run:
+
+```ini
+# config.cfg — add path to the list, or pass --predictors on the CLI
+[pipeline]
+predictors = path,appnn,waltz,pasta,archcandy,crossbeta,aggreprot
+```
+
+```bash
+aggressor-wrappers proteins.fasta -o output_dir/ --predictors path,appnn,waltz,pasta,archcandy,crossbeta,aggreprot
+aggressor-run path --fasta protein.fasta -o protein_PATH.csv
+```
+
+PATH threading is slow; use `--skip-run` when `results.csv` already exists.
 
 Tested pip/conda versions (env `AGGRESSOR`, Python 3.11): numpy 2.4.6, pandas 3.0.3,
 biopython 1.87, scikit-learn 1.9.0, modeller 10.8, pyrosetta 2026.3+releasequarterly.
@@ -126,10 +153,21 @@ aggressor-parse waltz ... --config /path/to/config.cfg
 
 
 
-### Metascore weight presets
+### Metascore methods and weight presets
 
-Three presets in `config.cfg` (metascore weights for 7 tools; AggreProt merged but not weighted):
+Two combiners are implemented; select with `[metascore] method` in `config.cfg`:
 
+| Method | Default | What it does |
+| ------ | ------- | ------------ |
+| `zscore_consensus` | **yes** | Standardise each `{Tool}_score` column, apply polarity (+1, or −1 for PASTA), combine with preset weights |
+| `fractional_consensus` | | Combine `{Tool}_bin` columns — scale-free, polarity-correct by construction |
+
+The raw weighted sum of score columns was removed: predictor scales are incomparable
+(WALTZ 0–100 vs APPNN 0–1 vs PASTA free energy) and PASTA's inverted polarity was not
+represented on `PredictorSpec`.
+
+Three weight presets tune relative confidence when using `zscore_consensus`
+(AggreProt is merged but not weighted yet):
 
 | Preset                  | Use case                                              |
 | ----------------------- | ----------------------------------------------------- |
@@ -137,29 +175,31 @@ Three presets in `config.cfg` (metascore weights for 7 tools; AggreProt merged b
 | `pathogenic_amyloids`   | Cross-Beta/APPNN emphasis                             |
 | `predictor_specificity` | **default** — conservative, tool-specificity oriented |
 
+Active preset: `[metascore].preset`. Override method per call in Python via
+`compute_metascore(..., method="fractional_consensus")`.
 
-Active preset is listed in `[metascore].preset` and also can be changed.
-
-The weights for predictors can also be calibrated through least-squares fit against standart tables:
+Preset weights can be calibrated against reference metascore tables (for
+`zscore_consensus`):
 
 ```bash
-python scripts/calibrate_weights.py
-  --merged-csv /path/to/merged.csv
+python scripts/calibrate_weights.py \
+  --merged-csv /path/to/merged.csv \
   --metascore-csv /path/to/reference/metascore/table.csv
 ```
 
-After calibration is complete, paste the printed snippet into a new preset table under `[metascore.presets.*]`.
+Paste the printed snippet into a new table under `[metascore.presets.*]`.
 
 ### `[pipeline]`
 
-Default predictors for the main multifasta command (`aggressor-wrappers FASTA -o DIR`):
+Default predictors for `aggressor-wrappers FASTA -o DIR` (PATH **excluded** — see above):
 
 ```ini
 [pipeline]
-predictors = path,appnn,waltz,pasta,archcandy,crossbeta,aggreprot
+predictors = appnn,waltz,pasta,archcandy,crossbeta,aggreprot
+predictor_jobs = 4   # run up to 4 predictors concurrently; set 1 for sequential
 ```
 
-Override per run with `--predictors path,appnn` (or any subset).
+Override per run: `--predictors appnn,waltz` or any subset including `path`.
 
 ### `[runners.waltz]` / `[runners.pasta]`
 
@@ -225,11 +265,10 @@ verify_ssl = false
 
 Parser thresholds (binarisation cutoffs). CLI `--threshold` overrides for a single run.
 
-### `[runners.path]` / `[runners.appnn]`
+### `[runners.path]` / `[runners.appnn]` (PATH opt-in)
 
-PATH uses a modified version of [upstream PATH](https://github.com/KubaWojciechowski/PATH.git)
-bundled as `vendor/PATH/path1.1.py`. Run PATH only inside the `AGGRESSOR` conda env
-(Modeller + PyRosetta). APPNN invokes `legacy/appnn_converter.R` via `Rscript`.
+PATH uses vendored `vendor/PATH/path1.1.py` (Modeller + PyRosetta). APPNN invokes
+`legacy/appnn_converter.R` via `Rscript`.
 
 ```ini
 [runners.path]
@@ -274,13 +313,14 @@ Layout: `cache/{protein_id}/{predictor}/raw.{ext}` — removed after each run un
 ## Pipeline
 
 ```
-FASTA / raw predictor output
-        ↓  aggressor-run / aggressor-wrappers (PATH, APPNN, WALTZ, PASTA, ArchCandy, Cross-Beta) or aggressor-parse
+multifasta FASTA
+        ↓  aggressor-wrappers (default: APPNN + 5 web predictors, concurrent)
+        ↓  optional: aggressor-run path / --predictors path,…
 standard CSV per predictor   (+ optional raw cache)
         ↓  aggressor-merge  (or aggressor-widemerge with --reference)
 wide CSV (position, aa_name, all predictors)
-        ↓  metascore (phase 5)
-metascores/*_metascore.csv
+        ↓  compute_metascore (zscore_consensus or fractional_consensus)
+metascore column / downstream (e.g. amyloscope export)
 ```
 
 ---
@@ -359,18 +399,17 @@ batching, and thresholds come from `config.cfg` unless overridden on the CLI.
 
 ```bash
 conda activate AGGRESSOR
-aggressor-wrappers vendor/PATH/test.fasta -o output_dir
+aggressor-wrappers proteins.fasta -o output_dir/
 # equivalent:
-python -m aggressor_wrappers vendor/PATH/test.fasta -o output_dir
-python aggressor-wrappers.py vendor/PATH/test.fasta -o output_dir
+python -m aggressor_wrappers proteins.fasta -o output_dir/
+python aggressor-wrappers.py proteins.fasta -o output_dir/
 ```
 
-**Output layout** (`-o` / `--output`):
+**Output layout** (`-o` / `--output`) — default panel (no PATH unless requested):
 
 ```
 output_dir/
 ├── {output_dir_name}.log   # full terminal transcript (append on resume)
-├── PATH/parsed/{protein_id}_PATH.csv
 ├── APPNN/parsed/{protein_id}_APPNN.csv
 ├── waltz/parsed/{protein_id}_waltz.csv
 ├── pasta/parsed/{protein_id}_pasta.csv
@@ -379,6 +418,7 @@ output_dir/
 ├── aggreprot/parsed/{protein_id}_aggreprot.csv
 ├── merged/{protein_id}_merged.csv
 └── .tmp/                  # removed after successful run (fasta split scratch)
+# PATH/parsed/… only when path is in --predictors or config [pipeline]
 ```
 
 Per-predictor `work/` directories (Modeller/PyRosetta/R/web job temp files) are **removed
@@ -428,10 +468,10 @@ Resume is disabled with `--skip-run` (that mode always re-parses from raw `work/
 files). Progress lines are tee'd to `{output_dir_name}.log` in append mode.
 
 
-**Smoke test** (3 short proteins; PATH is slow, web predictors add network time — ArchCandy ~4 s/protein):
+**Smoke test** (default panel; web predictors need network — ArchCandy ~4 s/protein):
 
 ```bash
-aggressor-wrappers vendor/PATH/test.fasta -o output_dir
+aggressor-wrappers proteins.fasta -o output_dir/
 ls output_dir/*/parsed output_dir/merged
 ```
 
@@ -600,7 +640,8 @@ Registered in schema for column names in merge only. Parser TBD.
 from aggressor_wrappers.core.config import load_config
 from aggressor_wrappers.core.cache import store_raw_cache
 from aggressor_wrappers.core.merge import merge_predictor_tables, write_merge_csv
-from aggressor_wrappers.core.metascore import compute_weighted_metascore
+from aggressor_wrappers.core.metascore import metascore_table
+from aggressor_wrappers.core.metascore_plugins import compute_metascore
 from aggressor_wrappers.predictors.registry import get_parser
 from aggressor_wrappers.runners.registry import get_runner
 
@@ -609,7 +650,7 @@ waltz = get_parser("waltz").parse("WaltzJob.txt", protein_id="APP", sequence=seq
 pasta = get_runner("pasta").run(fasta="RPS2.fasta", skip_run=True, raw_profile="…")
 
 wide = merge_predictor_tables([waltz, pasta])
-meta = compute_weighted_metascore(wide, config=cfg)
+meta = compute_metascore(wide, config=cfg)  # default: zscore_consensus
 write_merge_csv([waltz, pasta], "merged.csv")
 ```
 
@@ -668,8 +709,9 @@ python -m pytest
 
 ## Manual workflow (parse-only tools)
 
-For AggreProt (or any parse-only step), run the main pipeline for
-PATH/APPNN/WALTZ/PASTA/ArchCandy/Cross-Beta, then per-protein `aggressor-parse` and merge.
+For AggreProt or other parse-only steps, run the default panel first, then
+per-protein `aggressor-parse` and merge. Add PATH with `--predictors path,…` when
+Modeller/PyRosetta licences are available.
 
 AggreProt can also run standalone or in the batch pipeline:
 
@@ -691,21 +733,22 @@ Or merge with BHT reference check: `aggressor-widemerge --reference …`.
 
 
 
-## Development roadmap (v0.3.2)
+## Development roadmap (v0.4.0)
 
 
 | Phase | Status      | Notes                                                                               |
 | ----- | ----------- | ----------------------------------------------------------------------------------- |
-| **0** | done        | 8 parsers, merge, cache, config, golden tests                                       |
+| **0** | done        | 7 parsers + schema, merge, cache, config, golden tests                              |
 | **1** | done        | PATH/APPNN runners, multifasta batch, `aggressor-widemerge`                          |
 | **2** | done        | WALTZ web runner (HTTP)                                                               |
-| **3** | done        | PASTA + ArchCandy + Cross-Beta + AggreProt web runners                              |
+| **3** | done        | PASTA + ArchCandy + Cross-Beta + AggreProt web runners; concurrent `predictor_jobs` |
+| **3b**| done        | Resume/checkpoint, log tee, pluggable metascore (`zscore` / `fractional`)           |
 | **4** | planned     | Aggrescan parser + runner                                                           |
-| **5** | planned     | `aggressor-metascore` CLI, CI on GitHub Actions                                     |
+| **5** | partial     | CI on GitHub Actions ✅; dedicated `aggressor-metascore` CLI still planned          |
 
 
-**Validated:** `aggressor-wrappers vendor/PATH/test.fasta -o output_dir` with PATH +
-APPNN + WALTZ + PASTA + ArchCandy + Cross-Beta in env `AGGRESSOR`.
+**Validated:** default panel `aggressor-wrappers proteins.fasta -o output_dir/` in env
+`AGGRESSOR` (APPNN + web predictors). PATH validated separately with Modeller/PyRosetta.
 Cross-Beta: `threshold=0.54`, `window_size=auto`; parser `confidence_threshold=0.54` (BHT legacy).
 
 ---

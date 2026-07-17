@@ -26,7 +26,7 @@ class CacheConfig:
 
 @dataclass
 class MetascoreConfig:
-    method: str = "weighted_sum"
+    method: str = "zscore_consensus"
     preset: str = DEFAULT_METASCORE_PRESET
     presets: dict[str, dict[str, float]] = field(default_factory=dict)
     weights: dict[str, float] = field(default_factory=dict)
@@ -167,7 +167,7 @@ def load_config(path: str | None = None) -> AppConfig:
     weights = _active_weights(meta_options, presets, preset)
 
     metascore = MetascoreConfig(
-        method=str(meta_options.get("method", "weighted_sum")),
+        method=str(meta_options.get("method", "zscore_consensus")),
         preset=preset,
         presets=presets,
         weights=weights,

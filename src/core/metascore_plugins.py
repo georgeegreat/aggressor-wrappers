@@ -1,42 +1,19 @@
 """Pluggable metascore methods.
 
-``core.metascore.compute_weighted_metascore`` implements exactly one combiner —
-a linear weighted sum of *raw* predictor score columns — and
-``core.metascore`` already raises ``NotImplementedError`` for any other
-``[metascore] method``. That is the natural seam for pluggability, and this
-module turns it into a registry so an external consensus (e.g. amyloscope's
-tiered fractional consensus, or a Z-score consensus) can be dropped in without
-editing pipeline code.
+``[metascore] method`` in ``config.cfg`` selects a registered combiner from
+``METASCORE_REGISTRY``. Two built-ins ship with the package:
 
-Two defects in the raw weighted sum motivate the built-ins below. Both are
-properties of the code and config, not of any particular dataset:
+* ``zscore_consensus`` — standardise score columns, apply polarity, then weight.
+* ``fractional_consensus`` — combine per-tool ``{predictor}_bin`` columns.
 
-**Scale incommensurability.** The panel's score columns live on mutually
-incomparable scales — WALTZ and PATH on 0–100, APPNN/CrossBeta/ArchCandy on
-0–1, Aggrescan on roughly ±1, PASTA on a pairing free-energy scale of about
-−8–0. Summing raw values means the contribution of each predictor is set by its
-units rather than by its weight: with the shipped ``predictor_specificity``
-preset, WALTZ spans ~22 metascore units while ArchCandy spans ~0.05, a ratio of
-several hundred. The declared weights therefore do not express what they appear
-to express, and the three shipped presets rank residues near-identically
-(Spearman rho ~0.997–1.000) because the weights are swamped by scale.
+External consensus functions (e.g. amyloscope-backed tiering) can register via
+``@register_metascore`` without editing pipeline code.
 
-**Polarity inversion.** PASTA reports a pairing free energy in which *lower*
-(more negative) means more amyloidogenic; the package encodes this correctly at
-binarisation time (``predictors/pasta.py`` passes ``greater_or_equal=False``,
-and ``PredictorSpec.default_threshold`` for PASTA is −5.0). But
-``PredictorSpec`` carries no direction field, so the weighted sum adds
-``pasta_score * (+0.15)``: a strongly amyloidogenic PASTA signal *lowers* the
-metascore. The tool's evidence enters with the wrong sign, which is a
-correctness bug rather than a simplification — removing PASTA from the panel
-measurably improves discrimination relative to including it.
-
-Both are avoided by combining on a *comparable* footing: either standardise the
-scores and apply an explicit polarity (``zscore_consensus``), or discard the
-magnitudes entirely and combine the per-tool binary calls, which each tool's own
-parser already produced with the correct rule and direction
-(``fractional_consensus``). The latter is scale-free and polarity-correct *by
-construction*, and is the model amyloscope uses.
+Why not a raw weighted sum of score columns? The panel's scales are
+incommensurable (WALTZ/PATH 0–100 vs APPNN 0–1 vs PASTA free energy), and PASTA
+is polarity-inverted at binarisation time but has no direction field on
+``PredictorSpec``. A linear sum therefore mis-ranks residues and was removed in
+favour of the two combiners above.
 """
 
 from __future__ import annotations
@@ -151,24 +128,6 @@ def _score_columns(wide_df: pd.DataFrame, keys) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 # Built-in methods
 # --------------------------------------------------------------------------- #
-
-
-@register_metascore("weighted_sum")
-def weighted_sum(
-    wide_df: pd.DataFrame,
-    *,
-    config: AppConfig,
-    weights: dict[str, float] | None = None,
-) -> pd.Series:
-    """The original raw weighted sum, kept for backward compatibility.
-
-    Retained so existing outputs remain reproducible. Prefer
-    ``zscore_consensus`` or ``fractional_consensus``: this combiner is dominated
-    by the widest-scaled predictor and adds PASTA with an inverted sign.
-    """
-    from aggressor_wrappers.core.metascore import compute_weighted_metascore
-
-    return compute_weighted_metascore(wide_df, config=config, weights=weights)
 
 
 @register_metascore("zscore_consensus")

@@ -9,17 +9,18 @@ such changes are always listed under **Changed** with a migration note.
 
 ## [Unreleased]
 
-### Proposed — needs a decision before release
+### Removed
 
-- **`PATH` removed from the default predictor set.** `PATH` is the only
-  structure-based predictor and the only one requiring two licensed
-  dependencies (Modeller + PyRosetta), yet it currently runs by default
-  (`predictors = path,appnn,...`), which makes the whole pipeline uninstallable
-  without both licences and unusable in CI. Proposal: keep the wrapper, move
-  `PATH` behind an optional extra (`pip install .[path]`) and out of the
-  defaults. It supplies the panel's only orthogonal (structural) evidence, so it
-  is worth keeping as an opt-in rather than deleting.
-  *Not applied — this changes default output and is the maintainers' call.*
+- **`weighted_sum` metascore method.** Raw linear sums of incomparable score columns
+  mis-ranked residues (scale dominance, inverted PASTA polarity). Use
+  `zscore_consensus` (default) or `fractional_consensus`.
+- **Accidental duplicate files** `pipeline 2.py`, `schema 2.py`, `merge 2.py` from the
+  merge — superseded by the main modules; do not use.
+
+### Changed
+
+- **`[metascore] method = zscore_consensus`** is now the default in `config.cfg`.
+- **README** rewritten for v0.4.0: PATH opt-in, default web panel, metascore methods.
 
 ## [0.4.0] — 2026-07-11
 
@@ -116,27 +117,11 @@ the wrappers stop discarding each instrument's distinctive output.
   verification at release time.
 - **BREAKING**: PATH removed from the default predictor set (with the re-enable instructions)
 
-### Deprecated
+### Deprecated (0.4.0)
 
-- **`[metascore] method = weighted_sum`.** Retained, and byte-identical, so
-  existing results stay reproducible — but it is not recommended, for two
-  reasons that follow from the code and config alone:
-  1. *Scale incommensurability.* It sums **raw** scores across incomparable
-     scales (WALTZ/PATH on 0–100, APPNN/CrossBeta/ArchCandy on 0–1, Aggrescan on
-     ≈±1, PASTA on a free energy of ≈ −8–0). With the shipped
-     `predictor_specificity` preset, WALTZ spans ~22 metascore units while
-     ArchCandy spans ~0.05 — so a predictor's influence is set by its *units*,
-     not its weight. Consequently the three shipped presets rank residues
-     near-identically (Spearman ρ = 0.997–1.000): the weight tuning they exist to
-     express is swamped by scale.
-  2. *Polarity inversion.* PASTA's score is a pairing free energy where *lower* is
-     more amyloidogenic, but it is added with a positive weight — so strong PASTA
-     evidence *lowers* the metascore. In a controlled simulation, **removing
-     PASTA from the panel improves discrimination** (AUC 0.717 → 0.732), while
-     correcting scale and polarity recovers it (0.910).
-
-  Prefer `fractional_consensus` (scale-free, polarity-correct by construction) or
-  `zscore_consensus`.
+- **`[metascore] method = weighted_sum`.** Deprecated in 0.4.0 (scale incommensurability,
+  inverted PASTA polarity); **removed** in Unreleased. Prefer `zscore_consensus` or
+  `fractional_consensus`.
 - **`[predictors.archcandy] score_mode = "cumulative"`** — still the default for
   reproducibility, but `"highest"` is the defensible setting for consensus use.
 

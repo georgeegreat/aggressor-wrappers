@@ -7,17 +7,12 @@ import pandas as pd
 import pytest
 
 from aggressor_wrappers.core.config import load_config
-from aggressor_wrappers.core.metascore import compute_weighted_metascore
 from aggressor_wrappers.core.metascore_plugins import (
     available_methods,
     compute_metascore,
     polarity,
     register_metascore,
 )
-
-# --------------------------------------------------------------------------- #
-# Metascore plugins
-# --------------------------------------------------------------------------- #
 
 
 def _wide() -> pd.DataFrame:
@@ -42,29 +37,11 @@ def test_pasta_polarity_is_declared_inverted():
 
 
 def test_builtin_methods_are_registered():
-    for name in ("weighted_sum", "zscore_consensus", "fractional_consensus"):
-        assert name in available_methods()
+    assert available_methods() == ["fractional_consensus", "zscore_consensus"]
 
 
-def test_weighted_sum_is_backward_compatible():
-    """The registry's weighted_sum must reproduce the original function exactly."""
-    df, cfg = _wide(), load_config()
-    got = compute_metascore(df, config=cfg, method="weighted_sum")
-    want = compute_weighted_metascore(df, config=cfg)
-    assert np.allclose(got.to_numpy(), want.to_numpy())
-
-
-def test_raw_weighted_sum_misranks_because_pasta_sign_is_inverted():
-    """Documents the defect: amyloidogenic residues do NOT score higher."""
-    df, cfg = _wide(), load_config()
-    meta = compute_metascore(df, config=cfg, method="weighted_sum")
-    hot, cold = meta[10:].mean(), meta[:10].mean()
-    contribution = (df.pasta_score * cfg.metascore.weights["pasta"])
-    # PASTA drags the amyloidogenic half DOWN
-    assert contribution[10:].mean() < contribution[:10].mean()
-    # the panel still ranks correctly here only because WALTZ's 0-100 scale
-    # dominates; that dominance is the other half of the defect
-    assert hot > cold
+def test_default_config_uses_zscore_consensus():
+    assert load_config().metascore.method == "zscore_consensus"
 
 
 def test_corrected_methods_rank_amyloidogenic_residues_higher():
@@ -97,5 +74,3 @@ def test_external_method_can_be_registered():
 def test_unknown_method_raises_with_available_list():
     with pytest.raises(NotImplementedError, match="not registered"):
         compute_metascore(_wide(), config=load_config(), method="nope")
-
-

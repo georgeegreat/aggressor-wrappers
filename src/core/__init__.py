@@ -9,7 +9,8 @@ from aggressor_wrappers.core.merge import (
     write_merge_csv,
     write_standard_merge_csv,
 )
-from aggressor_wrappers.core.metascore import compute_weighted_metascore, metascore_table
+from aggressor_wrappers.core.metascore import metascore_table
+from aggressor_wrappers.core.metascore_plugins import compute_metascore, available_methods
 from aggressor_wrappers.core.schema import (
     PREDICTOR_REGISTRY,
     PredictorResult,
@@ -23,7 +24,8 @@ __all__ = [
     "PREDICTOR_REGISTRY",
     "PredictorResult",
     "PredictorSpec",
-    "compute_weighted_metascore",
+    "available_methods",
+    "compute_metascore",
     "get_predictor_spec",
     "load_config",
     "merge_predictor_tables",
