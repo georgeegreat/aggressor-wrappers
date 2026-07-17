@@ -15,10 +15,6 @@ from typing import Iterable
 
 from aggressor_wrappers.batch.logging import LogFn, default_log
 from aggressor_wrappers.batch.resume import partition_items_for_resume
-from aggressor_wrappers.batch.scheduler import (
-    run_predictors_concurrently,
-    serialise_log,
-)
 from aggressor_wrappers.core.config import load_config, runner_batch_config
 from aggressor_wrappers.core.fasta import read_fasta
 from aggressor_wrappers.core.merge import merge_predictor_tables
@@ -156,29 +152,17 @@ def run_multifasta_pipeline(
 
     items = list(sequences.items())
 
-    # Predictors are mutually independent (each owns its work/ and parsed/ dirs),
-    # so they are launched concurrently: wall time becomes max(T_predictor) rather
-    # than sum(T_predictor). Each runner's own parallel_jobs / sequences_per_run
-    # caps still bound its internal concurrency, so external web services see no
-    # more load than before. See batch/scheduler.py.
-    predictor_jobs = _predictor_jobs(config_path)
-    safe_emit = serialise_log(emit)
-    report = run_predictors_concurrently(
-        runner_keys,
-        lambda key: _run_runner_batches(
-            key,
+    for runner_key in runner_keys:
+        _run_runner_batches(
+            runner_key,
             items,
             layout,
             config_path=config_path,
             skip_run=skip_run,
             resume=resume,
             save_raw_files=save_raw_files,
-            emit=safe_emit,
-        ),
-        max_workers=predictor_jobs,
-        emit=safe_emit,
-    )
-    report.raise_if_all_failed()
+            emit=emit,
+        )
 
     if parse_only_keys:
         _run_parse_only(
@@ -1169,24 +1153,3 @@ def _merge_protein(
     wide.to_csv(merged_path, index=False)
     emit(f"[merge] {protein_id}: wrote {merged_path}")
     return merged_path
-
-
-def _predictor_jobs(config_path: str | None) -> int:
-    """How many predictors to run concurrently (``[pipeline] predictor_jobs``).
-
-    Defaults to the number of predictors requested, capped at 4: the runners are
-    dominated by remote polling rather than local CPU, so oversubscription is
-    cheap, but a cap keeps log output and local subprocess pressure sane.
-    Set to 1 to restore the original strictly-sequential behaviour.
-    """
-    cfg = load_config(config_path)
-    raw = getattr(cfg, "pipeline", None)
-    value = None
-    if isinstance(raw, dict):
-        value = raw.get("predictor_jobs")
-    else:
-        value = getattr(raw, "predictor_jobs", None)
-    try:
-        return max(1, int(value))
-    except (TypeError, ValueError):
-        return 4

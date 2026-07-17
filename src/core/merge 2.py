@@ -13,7 +13,6 @@ def merge_predictor_tables(
     results: list[PredictorResult],
     *,
     sort_by: str = "registry",
-    include_aux: bool = False,
 ) -> pd.DataFrame:
     """
     Merge multiple ``PredictorResult`` objects on ``position``.
@@ -44,19 +43,10 @@ def merge_predictor_tables(
 
     frames: list[pd.DataFrame] = []
     for index, result in enumerate(results):
-        df = result.to_dataframe(include_aux=include_aux)
+        df = result.to_dataframe()
         if index == 0:
             frames.append(df[["position", "aa_name"]])
-        keep = [result.spec.score_column, result.spec.bin_column]
-        if include_aux:
-            # Auxiliary per-residue channels the tool produced alongside its score
-            # (AggreProt's sasa/transmembrane, ArchCandy's arch topology). Namespaced
-            # by the parser, so they cannot collide across predictors.
-            keep += [
-                c for c in df.columns
-                if c.startswith(f"{result.spec.key}_") and c not in keep
-            ]
-        frames.append(df[keep])
+        frames.append(df[[result.spec.score_column, result.spec.bin_column]])
 
     return pd.concat(frames, axis=1)
 

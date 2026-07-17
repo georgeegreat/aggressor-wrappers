@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from aggressor_wrappers.core.cache import clear_cache_dir, raw_cache_path, store_raw_cache
-from aggressor_wrappers.core.config import AppConfig, CacheConfig, MetascoreConfig
+from aggressor_wrappers.core.config import AppConfig, CacheConfig
 
 
 def test_clear_cache_dir(tmp_path: Path) -> None:

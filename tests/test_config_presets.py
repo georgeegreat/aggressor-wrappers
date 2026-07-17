@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from aggressor_wrappers.core.config import load_config
@@ -85,8 +84,8 @@ def test_runner_batch_config_defaults() -> None:
 def test_pipeline_predictors_from_config() -> None:
     from aggressor_wrappers.core.config import default_pipeline_predictors
 
+    # PATH is opt-in (licensed deps: Modeller + PyRosetta), not a default.
     assert default_pipeline_predictors() == [
-        "path",
         "appnn",
         "waltz",
         "pasta",
