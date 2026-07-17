@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from aggressor_wrappers.core.config import AppConfig, load_config
+from aggressor_wrappers.core.config import AppConfig
 from aggressor_wrappers.core.metascore_plugins import compute_metascore
 
 
