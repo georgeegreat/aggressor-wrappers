@@ -37,10 +37,12 @@ class AggreProtParser(BasePredictorParser):
         # segment is sterically available to pair, and a TM segment's
         # hydrophobicity is a well-known false-positive source for
         # hydrophobicity-driven predictors.
-        aux_cols = [c for c in ("sasa", "transmembrane") if c in df.columns]
+        aux_cols = [c for c in ("sasa", "transmembrane", "struct_position", "amino_acid") if c in df.columns]
         aux: dict[str, list] = {name: [float("nan")] * len(sequence) for name in aux_cols}
 
         for _, row in df.iterrows():
+            if pd.isnull(row[position_col]):
+                continue
             pos = int(row[position_col])
             idx = pos - 1
             if 0 <= idx < len(sequence):

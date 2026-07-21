@@ -9,11 +9,15 @@ from aggressor_wrappers.core.schema import resolve_predictor_key
 from aggressor_wrappers.runners.aggreprot import AggreProtRunner
 from aggressor_wrappers.runners.appnn import APPNNRunner
 from aggressor_wrappers.runners.archcandy import ArchCandyRunner
+from aggressor_wrappers.runners.archcandy_local import ArchCandyLocalRunner
 from aggressor_wrappers.runners.base import BasePredictorRunner
 from aggressor_wrappers.runners.crossbeta import CrossBetaRunner
 from aggressor_wrappers.runners.path import PATHRunner
 from aggressor_wrappers.runners.pasta import PASTARunner
 from aggressor_wrappers.runners.waltz import WALTZRunner
+from aggressor_wrappers.runners.tango import TANGORunner
+from aggressor_wrappers.runners.amylogram import AmyloGramRunner
+from aggressor_wrappers.runners.amylodeep import AmyloDeepRunner
 
 RUNNER_REGISTRY: dict[str, type[BasePredictorRunner]] = {
     "path": PATHRunner,
@@ -23,6 +27,10 @@ RUNNER_REGISTRY: dict[str, type[BasePredictorRunner]] = {
     "archcandy": ArchCandyRunner,
     "crossbeta": CrossBetaRunner,
     "aggreprot": AggreProtRunner,
+    "tango": TANGORunner,
+    "amylogram": AmyloGramRunner,
+    "amylodeep": AmyloDeepRunner,
+    "archcandy_local": ArchCandyLocalRunner
 }
 
 # Pipeline-only keys from [runners.*]; not passed to runner constructors.

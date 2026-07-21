@@ -81,6 +81,28 @@ PREDICTOR_REGISTRY: dict[str, PredictorSpec] = {
         score_column="waltz_score",
         bin_column="waltz_bin",
     ),
+
+    "tango": PredictorSpec(
+        key="tango",
+        display_name="TANGO",
+        score_column="tango_score",
+        bin_column="tango_bin",
+        default_threshold=5.0,          # TANGO's conventional 5 % aggregation cut
+    ),
+    "amylogram": PredictorSpec(
+        key="amylogram",
+        display_name="AmyloGram",
+        score_column="amylogram_score",
+        bin_column="amylogram_bin",
+        default_threshold=0.5,
+    ),
+    "amylodeep": PredictorSpec(
+        key="amylodeep",
+        display_name="AmyloDeep",
+        score_column="amylodeep_score",
+        bin_column="amylodeep_bin",
+        default_threshold=0.5,
+    )
 }
 
 # Aliases accepted by CLI and filename inference.

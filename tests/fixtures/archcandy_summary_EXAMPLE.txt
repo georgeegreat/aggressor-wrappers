@@ -1,0 +1,84 @@
+#################################################################################### GENERAL INFORMATION ####################################################################################
+
+Accession ID : sp|P05067|A4_HUMAN
+Entry name : A4_HUMAN
+Gene name : No Gene Name
+Protein name : Amyloid-beta A4 prote
+Protein type : Canonical Sequence
+Protein sequence : DAEFRHDSGYEVHHQKLVFFAEDVGSNKGAIIGLMVGGVVIATVIVITLVMLKKKQYTSIHHGVVEVDAAVTPEERHLSKMQQNGYENPTYKFFEQMQN
+Protein sequence length : 99
+
+#################################################################################### ARCHCANDY PARAMETERS ####################################################################################
+
+Threshold : 0.57
+Cysteine Analysis : true
+Cavity Analysis : false
+Transmembrane Regions filter : false
+
+#################################################################################### RESULTS STATISTICS ####################################################################################
+
+Number of candidates predicted for amyloid fibrils : 16
+
+Amino acid details : 
+Percentage of amyloidogenicity : 40.4 % (40 amyloidogenic residues)
+Average cumulative score : 2.21
+Highest cumulative score : 10.01|A-30|I-31|I-32|G-33|L-34
+Lowest cumulative score : 0.64|H-13|H-14
+
+Candidates length details : 
+Average length : 21.88
+Longest length : 28|QKLVFFAEDVGSNKGAIIGLMVGGVVIA(3)
+Smallest Length : 17|AIIGLMVGGVVIATVIV(15)
+
+Candidates score details : 
+Average score : 0.63
+Highest score : 0.665|NKGAIIGLMVGGVVIATVIVITLVM(6)
+Lowest score : 0.574|AIIGLMVGGVVIATVIVIT(16)
+
+N-C terminal region details : 
+Number of Candidates in N-terminal region : 0 (0.0 %) 
+Number of Candidates in N-MIDDLE : 16 (100.0 %) 
+Number of Candidates in C-terminal region : 0 (0.0 %) 
+Number of Candidates in MIDDLE-C : 0 (0.0 %) 
+Number of Candidates in N-MIDDLE-C : 0 (0.0 %) 
+Number of Candidates in MIDDLE : 0 (0.0 %) 
+
+Arcs details: 
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                   ARC TYPE                   |  TOTAL NB OF CANDIDATES  |  N-TERMINAL REGION   |  N-MIDDLE       |  C-TERMINAL REGION   |  MIDDLE-C       |  N-MIDDLE-C     |  MIDDLE         
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Number of 3 Residues Arc (PPL conformation)  |  3 (18.75 %)             |  0 (0.0 %)           |  3 (18.75 %)    |  0 (0.0 %)           |  0 (0.0 %)      |  0 (0.0 %)      |  0 (0.0 %)      
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Number of 4 Residues Arc (BEPL conformation) |  1 (6.25 %)              |  0 (0.0 %)           |  1 (6.25 %)     |  0 (0.0 %)           |  0 (0.0 %)      |  0 (0.0 %)      |  0 (0.0 %)      
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Number of 4 Residues Arc (GBEB conformation) |  0 (0.0 %)               |  0 (0.0 %)           |  0 (0.0 %)      |  0 (0.0 %)           |  0 (0.0 %)      |  0 (0.0 %)      |  0 (0.0 %)      
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Number of 4 Residues Arc (GBPL conformation) |  6 (37.5 %)              |  0 (0.0 %)           |  6 (37.5 %)     |  0 (0.0 %)           |  0 (0.0 %)      |  0 (0.0 %)      |  0 (0.0 %)      
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Number of 5 Residues Arc                     |  3 (18.75 %)             |  0 (0.0 %)           |  3 (18.75 %)    |  0 (0.0 %)           |  0 (0.0 %)      |  0 (0.0 %)      |  0 (0.0 %)      
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Number of 6 Residues Arc type I              |  1 (6.25 %)              |  0 (0.0 %)           |  1 (6.25 %)     |  0 (0.0 %)           |  0 (0.0 %)      |  0 (0.0 %)      |  0 (0.0 %)      
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Number of 6 Residues Arc type II             |  2 (12.5 %)              |  0 (0.0 %)           |  2 (12.5 %)     |  0 (0.0 %)           |  0 (0.0 %)      |  0 (0.0 %)      |  0 (0.0 %)      
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+#################################################################################### CANDIDATES DETAILS ####################################################################################
+
+Number     Sequence                                                Score           Arc Type        Start Position  Stop Position   Length          Candidate / query %  Location       
+1          HHQKLVFFAEDVGSNKGAIIGL                                  0.643           GBPL            13              34              22              22.22                N-Middle       
+2          QKLVFFAEDVGSNKGAIIGLMV                                  0.650           GBPL            15              36              22              22.22                N-Middle       
+3          QKLVFFAEDVGSNKGAIIGLMVGGVVIA                            0.622           6 Res Arc 2     15              42              28              28.28                N-Middle       
+4          QKLVFFAEDVGSNKGAIIGLMVGGVVI                             0.594           5 Res Arc       15              41              27              27.27                N-Middle       
+5          GSNKGAIIGLMVGGVVIATVIV                                  0.603           GBPL            25              46              22              22.22                N-Middle       
+6          NKGAIIGLMVGGVVIATVIVITLVM                               0.665           PPL             27              51              25              25.25                N-Middle       
+7          NKGAIIGLMVGGVVIATVIVITLVML                              0.658           GBPL            27              52              26              26.26                N-Middle       
+8          GAIIGLMVGGVVIATVIVITLVM                                 0.599           5 Res Arc       29              51              23              23.23                N-Middle       
+9          AIIGLMVGGVVIATVIVITLVM                                  0.657           GBPL            30              51              22              22.22                N-Middle       
+10         AIIGLMVGGVVIATVIVI                                      0.638           BEPL            30              47              18              18.18                N-Middle       
+11         AIIGLMVGGVVIATVIVI                                      0.638           GBPL            30              47              18              18.18                N-Middle       
+12         AIIGLMVGGVVIATVIVITL                                    0.629           6 Res Arc 1     30              49              20              20.2                 N-Middle       
+13         AIIGLMVGGVVIATVIVITL                                    0.629           6 Res Arc 2     30              49              20              20.2                 N-Middle       
+14         AIIGLMVGGVVIATVIVITLV                                   0.606           PPL             30              50              21              21.21                N-Middle       
+15         AIIGLMVGGVVIATVIV                                       0.597           PPL             30              46              17              17.17                N-Middle       
+16         AIIGLMVGGVVIATVIVIT                                     0.574           5 Res Arc       30              48              19              19.19                N-Middle       
