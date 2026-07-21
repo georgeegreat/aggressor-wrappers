@@ -1,118 +1,10 @@
-feat(runners): add local execution backends for ArchCandy, Cross-Beta, TANGO,
- AmyloGram and AmyloDeep
+feat(CrossBeta): add local execution backends for Cross-Beta
 
-Several predictors exist as local tools as well as (or instead of) web services,
+CrossBeta Predictor also exists as local tools as well as (or instead of) web services,
 but nothing in the package could execute them: the `_local` keys in the
 amyloscope config are *parser adapters*, fed by files produced by hand outside
 the pipeline. This adds local execution, plus the mechanism to choose between
 local and web without waiting on a dead service to find out.
-
-core/backend.py — backend selection
-
-  Per-predictor policy `backend = auto|local|web` (also readable from
-  AGGRESSOR_<KEY>_BACKEND):
-
-    auto   run the local tool if its binary/JAR resolves, else the web service
-    local  force local; a clear error if absent, never a silent fall-back
-    web    the previous behaviour
-
-  The decision uses shutil.which() / Path.exists() BEFORE any network call. It
-  deliberately does not probe whether the service is up, because that probe is
-  the slow flaky thing the fallback exists to avoid: a dead service should cost
-  nothing, and it only costs nothing if it was never contacted.
-
-runners/archcandy_local.py, predictors/archcandy_local.py
-
-  ArchCandy has a working headless CLI, which is not obvious from the
-  distribution. `java -jar` reaches fr.cnrs.crbm.ArchCandyFactory.Final, which
-  builds a JFrame regardless of arguments and dies with HeadlessException;
-  AnalysisFactoryCommandLine sounds right but is a 481-byte stub with an empty
-  main that exits 0 and does nothing. The real entry point is
-  MakeAnalysisWithoutApplet, invoked with -cp and twelve positional arguments.
-
-  Three input traps, all found by running it:
-    - -cp + class, never -jar;
-    - headers must be sp|acc|entry — FastaParse.getEntryName splits on '|' and
-      reads index 2, so >RPL27 aborts with ArrayIndexOutOfBoundsException;
-    - a description after the entry name is also mandatory — >sp|X|Y raises
-      StringIndexOutOfBoundsException, >sp|X|Y anything parses.
-  The runner rewrites headers accordingly and maps the output folders (which
-  embed the header verbatim) back to the original ids.
-
-  The CANDIDATES DETAILS table is fixed-width and its Arc Type field contains
-  spaces ("6 Res Arc 1"), so splitting on whitespace silently shifts every later
-  column; spans are derived from the header line instead. Start/Stop are 1-based
-  inclusive. "No candidates" returns an empty frame rather than raising, so one
-  clean protein cannot drop the predictor for the whole panel.
-
-  Verified against ArchCandy's own summary statistics: it reports 40
-  amyloidogenic residues and a highest score of 0.665; the runner produces 40/99
-  flagged and peak 0.665.
-
-  Default score_mode is 'highest' rather than the web default 'cumulative': the
-  test sequence produced 16 overlapping candidates, many sharing start=30 and
-  each scoring ~0.6, which sum to ~9.6 against ArchCandy's own 0.57 threshold.
-
-runners/tango.py, predictors/tango.py
-
-  TANGO is licensed, platform-specific and has no web service, so it is
-  local-only and its tests skip when the binary is absent.
-
-  Long output paths fail SILENTLY: ~30 characters works, ~42 produces no file,
-  no message and exit code 0. This surfaced only under pytest's deep tmp_path
-  directories. The runner therefore chdirs into the output directory and passes
-  a bare basename, so path length cannot matter.
-
-  Aggregation is the score column (the quantity the literature thresholds, at
-  5%); Beta, Turn, Helix and Conc-Stab_Aggregation are retained as aux channels
-  rather than dropped — the secondary-structure propensities are what make TANGO
-  more than an aggregation scale, since a segment predicted beta-aggregating and
-  beta-structured is a different claim from one aggregating in a helical context.
-
-  The parser rejects a mismatched sequence: TANGO echoes the input in its aa
-  column, so a disagreement means the file describes a different protein, and
-  reusing a stale output would misalign every position.
-
-  Verified on Abeta42 at the 5% cut: 17-21 LVFFA (peak 86.9%) and 29-41
-  GAIIGLMVGGVVI (peak 98.6%) — both canonical APRs, from TANGO's own numbers.
-
-runners/amylogram.py, predictors/amylogram.py
-
-  AmyloGram returns one probability per query, so joining a positional consensus
-  needs an explicit modelling step. AmyloGram is an n-gram model trained on
-  hexapeptides (AmyLoad), so whole-protein input is outside its fitted regime;
-  sliding its training unit is closer to the training distribution, not merely
-  more convenient. Defaults: window=6, aggregation=max, threshold=0.5.
-
-  'max' rather than 'mean' because mean dilutes a single strongly amyloidogenic
-  hexapeptide against weaker overlapping windows and flags strictly fewer
-  residues (asserted in tests) — the same argument that makes 'highest'
-  preferable to 'cumulative' for ArchCandy. Both are available and the choice is
-  recorded in metadata, so a profile is never ambiguous about how it was made.
-
-  Sequences shorter than the window are scored as one peptide rather than
-  dropped: silently returning an empty profile would remove the tool from the
-  consensus without saying so. The R side stays thin — the windowing and the
-  projection live in Python where they are testable.
-
-runners/amylodeep.py, predictors/amylodeep.py
-
-  AmyloDeep positions are 0-based where the rest of the package is 1-based; read
-  verbatim its profile sits one residue toward the N-terminus of every other
-  tool, which is small enough to survive inspection and large enough to break a
-  consensus requiring 80% window overlap.
-
-  Rows may also be windows rather than residues: fewer rows than sequence_length
-  implies a window of sequence_length - n_rows + 1, and position is a window
-  start. A 31-residue sample produced 22 rows, implying a window of 10; read
-  verbatim, residues 23-31 would have been left at zero. The parser detects
-  either case and records granularity, window_size and position_base rather than
-  assuming.
-
-  Two operational failure modes are detected and reported with the fix named:
-  the first run downloads model weights from huggingface.co (air-gapped setups
-  need HF_HOME pre-populated), and jax_unirep imports pkg_resources, which
-  setuptools >= 81 removed.
 
 runners/crossbeta_local.py, predictors/crossbeta_local.py
 
@@ -165,17 +57,3 @@ core/compat.py
   patch and calls amylodeep.cli.main in the same interpreter that runs the
   model. Disable with use_compat_shim=false once the fix lands upstream, which
   is where it belongs.
-
-Licensing
-
-  PATH (Modeller + PyRosetta), TANGO, ArchCandy and Cross-Beta's IUPred3
-  dependency are all separately licensed and non-redistributable. None of their binaries
-  are vendored; each is located by config path, kept out of the default
-  predictor list, and skipped cleanly when absent so CI stays green.
-
-Depends on 'feat(schema): preserve auxiliary per-residue and region-level
-predictor output' — the TANGO and ArchCandy runners emit aux channels.
-
-Tests: 110 passed, 9 skipped (83 baseline + 9 backend + 12 local tools +
-6 compat/Cross-Beta).
-Binary-dependent tests skip when the tool is not installed.

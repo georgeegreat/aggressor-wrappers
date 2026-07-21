@@ -44,12 +44,21 @@ class AmyloDeepRunner(BasePredictorRunner):
         self,
         *,
         executable: str = "amylodeep",
+        python: str | None = None,
+        use_compat_shim: bool = True,
         threshold: float = 0.5,
         output_format: str = "csv",
         timeout_seconds: int = 1800,
         **_ignored,
     ) -> None:
         self.executable = executable
+        # AmyloDeep runs as a subprocess (often in its own conda env), so the
+        # jax_unirep clip fix must be applied inside THAT interpreter. When
+        # enabled, the tool is launched through a generated self-contained
+        # bootstrap instead of the console script. Set false to call `amylodeep`
+        # directly (e.g. once the fix lands upstream).
+        self.python = python
+        self.use_compat_shim = bool(use_compat_shim)
         self.threshold = float(threshold)
         if output_format not in ("csv", "json"):
             raise ValueError("output_format must be 'csv' or 'json'")
@@ -69,17 +78,20 @@ class AmyloDeepRunner(BasePredictorRunner):
             )
 
     # ------------------------------------------------------------------ #
+    def _argv(self, sequence: str, dest: Path) -> list[str]:
+        args = ["--output", str(dest), "--format", self.output_format, sequence]
+        if self.use_compat_shim:
+            from aggressor_wrappers.core.compat import write_amylodeep_bootstrap
+
+            boot = write_amylodeep_bootstrap(dest.parent / "_run_amylodeep.py")
+            python = self.python or shutil.which("python3") or "python3"
+            return [python, str(boot), *args]
+        return [self.executable, *args]
+
     def _run_one(self, sequence: str, dest: Path) -> Path:
         dest.parent.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            [
-                self.executable,
-                "--output",
-                str(dest),
-                "--format",
-                self.output_format,
-                sequence,
-            ],
+            self._argv(sequence, dest),
             capture_output=True,
             text=True,
             timeout=self.timeout_seconds,
