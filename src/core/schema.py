@@ -42,6 +42,15 @@ PREDICTOR_REGISTRY: dict[str, PredictorSpec] = {
         score_column="aggrescan_score",
         bin_column="aggrescan_bin",
     ),
+    "foldamyloid": PredictorSpec(
+        key="foldamyloid",
+        display_name="FoldAmyloid",
+        score_column="foldamyloid_score",
+        bin_column="foldamyloid_bin",
+        # 21.4 expected contacts within 8 A, averaged over a 5-residue frame:
+        # the cutoff calibrated in Garbuzynskiy et al. (2010) Bioinformatics.
+        default_threshold=21.4,
+    ),
     "appnn": PredictorSpec(
         key="appnn",
         display_name="APPNN",
@@ -111,6 +120,18 @@ PREDICTOR_ALIASES: dict[str, str] = {
     "cross-beta-predictor": "crossbeta",
     "cross_beta": "crossbeta",
     "arch-candy": "archcandy",
+    "archcandy2": "archcandy",
+    "crossbeta2": "crossbeta",
+    "crossbetapred": "crossbeta",
+    "cross-beta-pred": "crossbeta",
+    "archcandy-2.0": "archcandy",
+    # 'archcandy_legacy' deliberately NOT aliased: the 1.x runner is retired to
+    # legacy/runners/, and mapping the old name onto ArchCandy 2.0 would answer a
+    # request for one tool version with another. An unknown key is the honest reply.
+    "fold-amyloid": "foldamyloid",
+    "fold_amyloid": "foldamyloid",
+    "FoldAmyloid": "foldamyloid",
+    "AGGRESCAN": "aggrescan",
     "ArchCandy": "archcandy",
     "APPNN": "appnn",
     "PATH": "path",

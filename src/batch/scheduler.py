@@ -47,6 +47,19 @@ class PredictorOutcome:
     ok: bool
     error: BaseException | None = None
 
+    @property
+    def skipped(self) -> bool:
+        """A permanent refusal, not a run failure.
+
+        Cross-Beta-Pred's CAPTCHA gate and a transient TLS drop both used to
+        print as `FAILED`, which made a recoverable network blip and a
+        deliberate, documented refusal to automate a gated form indistinguishable
+        in the log — and counted both towards "N failed".
+        """
+        from aggressor_wrappers.core.net import classify
+
+        return self.error is not None and classify(self.error) == "permanent"
+
 
 @dataclass
 class SchedulerReport:
@@ -56,13 +69,31 @@ class SchedulerReport:
 
     @property
     def failed(self) -> list[PredictorOutcome]:
-        return [o for o in self.outcomes if not o.ok]
+        """Predictors that failed for a reason that might not recur."""
+        return [o for o in self.outcomes if not o.ok and not o.skipped]
+
+    @property
+    def skipped(self) -> list[PredictorOutcome]:
+        return [o for o in self.outcomes if not o.ok and o.skipped]
 
     @property
     def succeeded(self) -> list[PredictorOutcome]:
         return [o for o in self.outcomes if o.ok]
 
     def raise_if_all_failed(self) -> None:
+        """Raise only if nothing ran AND something actually failed.
+
+        A panel where every configured predictor was skipped for a permanent,
+        documented reason is a misconfiguration to report, not a crash; a panel
+        where they all failed on the network is worth raising.
+        """
+        if self.outcomes and not self.succeeded and not self.failed:
+            names = ", ".join(o.key for o in self.skipped)
+            raise RuntimeError(
+                f"no predictor produced output; all {len(self.skipped)} were "
+                f"skipped for permanent reasons ({names}). Check [pipeline] "
+                f"predictors and each runner's backend setting."
+            )
         if self.outcomes and not self.succeeded:
             first = self.failed[0]
             raise RuntimeError(
@@ -116,12 +147,18 @@ def run_predictors_concurrently(
         for future in as_completed(futures):
             report.outcomes.append(future.result())
 
+    # Both classes are reported; only the counts differ, so a reader can see at
+    # a glance whether a run needs retrying or reconfiguring.
+    for outcome in report.skipped:
+        emit(f"[sched] SKIPPED {outcome.key}: {outcome.error}")
     for outcome in report.failed:
         emit(f"[sched] FAILED {outcome.key}: {outcome.error}")
-    emit(
-        f"[sched] {len(report.succeeded)}/{len(runner_keys)} predictor(s) completed"
-        + (f"; {len(report.failed)} failed" if report.failed else "")
-    )
+    summary = f"[sched] {len(report.succeeded)}/{len(runner_keys)} predictor(s) completed"
+    if report.failed:
+        summary += f"; {len(report.failed)} failed"
+    if report.skipped:
+        summary += f"; {len(report.skipped)} skipped (permanent)"
+    emit(summary)
     return report
 
 

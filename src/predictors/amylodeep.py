@@ -1,12 +1,25 @@
 """Parse AmyloDeep output into a per-residue profile.
 
-AmyloDeep emits CSV/JSON of the form::
+Two output generations are read, and the difference matters because only one of
+them has already placed its scores on a residue axis.
+
+**0.4 and later, per residue** (the default, and what this package asks for)::
+
+    sequence_id,...,window_size,aggregate,heads_used,...,residue_number,residue,
+    probability,coverage_depth,window_min,...,window_at_start
+    input_sequence,...,6,mean,5,...,1,M,0.3121,1,...
+
+``residue_number`` is 1-based and the projection over covering windows was done
+by the tool, which records the ``window_size`` and ``aggregate`` it used. Those
+values are carried into the metadata as reported rather than re-derived, and no
+second projection is applied here: projecting twice would widen every boundary.
+
+**0.3 and earlier, per window**::
 
     sequence_id,position,probability,sequence_length,avg_probability,max_probability
     input_sequence,0,0.793,31,0.7744,0.945
-    input_sequence,1,0.8404,31,0.7744,0.945
 
-Two properties need care, and both are silent corruptions if missed.
+Here two properties need care, and both are silent corruptions if missed.
 
 **Positions are 0-based.** Every other predictor in this package, and
 ``PredictorResult`` itself, is 1-based (``position``/``Number`` start at 1). Read
@@ -25,6 +38,11 @@ and each residue takes the maximum probability of the windows containing it
 not be diluted by weak neighbours, which is the same convention ArchCandy's
 ``highest`` mode uses).
 
+That fallback is deliberately the wider rule, and it is a fallback: ``max`` can
+exceed the evidence by up to ``window_size - 1`` residues, which is why 0.4's own
+``mean`` projection is preferred and why the metadata always says which of the two
+produced the numbers.
+
 Which case applies is *detected and recorded* in the result metadata rather than
 assumed, so the choice is visible in the output instead of buried here.
 
@@ -40,7 +58,25 @@ from pathlib import Path
 
 import pandas as pd
 
-REQUIRED = {"position", "probability"}
+from aggressor_wrappers.core.schema import PredictorResult, get_predictor_spec
+from aggressor_wrappers.predictors.base import BasePredictorParser
+
+#: The index column, by generation. 0.4 writes ``residue_number`` (1-based, one
+#: row per residue) or ``window_start_0based`` under ``--resolution window``; 0.3
+#: wrote ``position``. Checked in this order so a 0.4 residue table is recognised
+#: as such even though it also carries window columns.
+INDEX_COLUMNS = ("residue_number", "position", "window_start_0based")
+REQUIRED = {"probability"}
+
+
+def _index_column(df, path) -> str:
+    for name in INDEX_COLUMNS:
+        if name in df.columns:
+            return name
+    raise ValueError(
+        f"{path}: AmyloDeep output has no position column (looked for "
+        f"{list(INDEX_COLUMNS)}); file has {list(df.columns)}"
+    )
 
 
 def _load(path: str | Path) -> pd.DataFrame:
@@ -78,17 +114,22 @@ def parse_amylodeep(
         if not subset.empty:
             df = subset
 
+    index_column = _index_column(df, path)
+
     if "sequence_length" in df.columns and df["sequence_length"].notna().any():
         length = int(df["sequence_length"].dropna().iloc[0])
     elif sequence is not None:
         length = len(sequence)
     else:
-        length = int(df["position"].max()) + 1
+        length = int(df[index_column].max()) + 1
 
-    positions = df["position"].astype(int).to_numpy()
+    positions = df[index_column].astype(int).to_numpy()
     probs = df["probability"].astype(float).to_numpy()
 
-    # AmyloDeep is 0-based; this package is 1-based.
+    # AmyloDeep 0.3 was 0-based; 0.4's residue_number is 1-based. This package is
+    # 1-based throughout, so the base is read from the data rather than assumed
+    # from the column name -- a file written by a version this parser has not seen
+    # should be wrong loudly, not quietly.
     base = int(positions.min())
     if base not in (0, 1):
         raise ValueError(f"{path}: unexpected minimum position {base}; expected 0 or 1")
@@ -110,12 +151,84 @@ def parse_amylodeep(
         "source": str(path),
         "rows": n_rows,
         "sequence_length": length,
+        "index_column": index_column,
         "position_base": 0 if zero_based else 1,
         "granularity": "per_residue" if per_residue else "window",
         "window_size": window,
         "aggregation": "max_over_covering_windows" if window > 1 else "direct",
     }
+
+    # A 0.4 residue table has already been projected, and it records how. Report
+    # the tool's own window size and rule instead of this parser's, which would
+    # otherwise claim window_size 1 / "direct" for numbers aggregated over six
+    # windows -- the projection would then be invisible downstream, and the
+    # shoulder width it implies unaccounted for. projected_by names who did it.
+    if per_residue and "window_size" in df.columns and df["window_size"].notna().any():
+        meta["window_size"] = int(df["window_size"].dropna().iloc[0])
+        meta["projected_by"] = "amylodeep"
+        if "aggregate" in df.columns and df["aggregate"].notna().any():
+            meta["aggregation"] = str(df["aggregate"].dropna().iloc[0])
+    elif window > 1:
+        meta["projected_by"] = "aggressor-wrappers"
+
+    # Carried through where 0.4 supplies them: coverage_depth marks the termini,
+    # where a value rests on fewer windows, and heads_used flags a run that
+    # dropped the XGBoost head and averaged four rather than five.
+    if "heads_used" in df.columns and df["heads_used"].notna().any():
+        meta["heads_used"] = int(df["heads_used"].dropna().iloc[0])
+    if per_residue and "coverage_depth" in df.columns and df["coverage_depth"].notna().any():
+        depth = df["coverage_depth"].dropna().astype(int)
+        meta["coverage_depth_min"] = int(depth.min())
+        meta["coverage_depth_max"] = int(depth.max())
     for col in ("avg_probability", "max_probability"):
         if col in df.columns and df[col].notna().any():
             meta[col] = float(df[col].dropna().iloc[0])
     return scores, meta
+
+
+class AmyloDeepParser(BasePredictorParser):
+    """Register :func:`parse_amylodeep` on the standard parser interface.
+
+    Kept as a thin adapter over the function, which predates it and is used
+    directly by the runner. The class exists so AmyloDeep can reach a consensus
+    table through the same path as every other predictor -- and so that path is
+    an explicit, reviewable choice rather than a side effect of a runner existing.
+
+    AmyloDeep is OPT-IN. It is absent from `predictors` in config.cfg, and this
+    registration does not change that: registering a parser makes a tool
+    *available* to the panel, while the config decides whether it votes. That
+    separation matters for a fractional consensus, where adding one voter
+    changes every tier.
+    """
+
+    spec = get_predictor_spec("amylodeep")
+
+    def __init__(self, threshold: float | None = None) -> None:
+        self.threshold = 0.5 if threshold is None else float(threshold)
+
+    def parse(
+        self,
+        source: str | Path,
+        *,
+        protein_id: str,
+        sequence: str,
+        **kwargs,
+    ) -> PredictorResult:
+        scores, meta = parse_amylodeep(
+            source, sequence=sequence, sequence_id=kwargs.get("sequence_id", protein_id)
+        )
+        if len(scores) != len(sequence):
+            raise ValueError(
+                f"{source}: AmyloDeep reports {len(scores)} positions for a "
+                f"{len(sequence)}-residue sequence ({protein_id}). The file is "
+                f"probably for a different protein."
+            )
+        meta = {**meta, "threshold": self.threshold, "binarised_from": "probability_threshold"}
+        return PredictorResult(
+            protein_id=protein_id,
+            sequence=sequence,
+            spec=self.spec,
+            scores=scores,
+            binary=[1 if value > self.threshold else 0 for value in scores],
+            metadata=meta,
+        )

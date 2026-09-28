@@ -11,6 +11,9 @@ build/
 .mypy_cache/
 htmlcov/
 .coverage
+.pytest_cache/
+.ruff_cache/
+aggressor_wrappers.egg-info/
 
 # Runtime / local outputs
 cache/
@@ -25,3 +28,13 @@ vendor/PATH/test_output/
 *~
 .vscode/
 .idea/
+
+# Finder/iCloud duplicate files ("pipeline 2.py"): a SPACE, then the digit.
+#
+# Deliberately NOT `*2.py`. A digit suffix is how this project names a TOOL
+# version, not a file revision, so that glob hid three modules the package
+# imports and a fresh clone would have raised ImportError before any predictor
+# ran. Those modules are now archcandy_v2.py / crossbeta_v2.py, which reads as a
+# version and cannot collide with this rule; superseded code lives in
+# legacy/runners/ with a `_deprecated` suffix instead of being ignored in place.
+* [0-9].py

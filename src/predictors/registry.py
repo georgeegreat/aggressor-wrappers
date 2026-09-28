@@ -7,10 +7,14 @@ from typing import Any
 from aggressor_wrappers.core.config import load_config, predictor_options
 from aggressor_wrappers.core.schema import resolve_predictor_key
 from aggressor_wrappers.predictors.aggreprot import AggreProtParser
+from aggressor_wrappers.predictors.aggrescan import AggrescanParser
 from aggressor_wrappers.predictors.appnn import APPNNParser
+from aggressor_wrappers.predictors.amylodeep import AmyloDeepParser
 from aggressor_wrappers.predictors.archcandy import ArchCandyParser
+from aggressor_wrappers.predictors.archcandy_v2 import ArchCandy2Parser
 from aggressor_wrappers.predictors.base import BasePredictorParser
 from aggressor_wrappers.predictors.crossbeta import CrossBetaParser
+from aggressor_wrappers.predictors.foldamyloid import FoldAmyloidParser
 from aggressor_wrappers.predictors.pasta import PASTAParser
 from aggressor_wrappers.predictors.path import PATHParser
 from aggressor_wrappers.predictors.waltz import WALTZParser
@@ -22,7 +26,13 @@ PARSER_REGISTRY: dict[str, type[BasePredictorParser]] = {
     "pasta": PASTAParser,
     "aggreprot": AggreProtParser,
     "archcandy": ArchCandyParser,
+    "archcandy2": ArchCandy2Parser,
     "crossbeta": CrossBetaParser,
+    "foldamyloid": FoldAmyloidParser,
+    "aggrescan": AggrescanParser,
+    # Opt-in: registered so a pLM-based tool CAN be scored and attributed,
+    # not so it votes by default. config.cfg decides the panel.
+    "amylodeep": AmyloDeepParser,
 }
 
 

@@ -50,7 +50,13 @@ _TERMINAL_STATUSES = frozenset({"DONE", "FAILED"})
 _MAX_SEQUENCES_PER_JOB = 3
 # Fixed width of each protein block in combined CSV exports (position … transmembrane).
 _COLUMNS_PER_PROTEIN = 6
-_ACCESSION_RE = re.compile(r"^[\w.]+$")
+# Hyphens are ordinary in real accessions -- FlyBase/AphidBase identifiers such
+# as 7029.ACYPI000203-PA carry one, and rejecting them aborted a 372-protein
+# panel at the first such sequence. The service itself accepts them; the
+# restriction was the wrapper's. Kept as a character class rather than "anything
+# goes" because the accession is interpolated into per-sequence form field names
+# (inputStructureSource<ACCESSION>), so whitespace and separators must stay out.
+_ACCESSION_RE = re.compile(r"^[\w.\-|:]+$")
 # Brief 404s right after PUT have been observed while the job record propagates.
 _POLL_404_GRACE_SECONDS = 30
 _COMBINED_CSV_NAME = "aggreprot_combined.csv"
@@ -74,6 +80,7 @@ class AggreProtRunner(BasePredictorRunner):
         aggregation_threshold: float = 0.25,
         job_title: str = "",
         email: str = "",
+        pdb_id: str | None = None,
     ) -> None:
         self.base_url = (
             base_url or os.environ.get("AGGRESSOR_AGGREPROT_BASE_URL") or _DEFAULT_BASE_URL
@@ -84,6 +91,9 @@ class AggreProtRunner(BasePredictorRunner):
         self.aggregation_threshold = float(aggregation_threshold)
         self.job_title = str(job_title)
         self.email = str(email)
+        # Accepted so that a [runners.aggreprot] pdb_id is not silently dropped
+        # on the way to a runner that cannot honour it. See _build_job_request.
+        self.pdb_id = (pdb_id or "").strip() or None
         self.last_raw_path: Path | None = None
 
     def execute(self, fasta_path: Path, work_dir: str | Path) -> Path:
@@ -177,6 +187,17 @@ class AggreProtRunner(BasePredictorRunner):
         return dest_csv
 
     def _build_job_request(self, records: dict[str, str]) -> dict:
+        if self.pdb_id:
+            raise ValueError(
+                "pdb_id is set, but this runner submits through PUT /api/jobs/{id}, "
+                "which carries no structure channel: the server rejects structSource "
+                "and null structure placeholders, so the structure is chosen on step 2 "
+                "of the PAGE flow and nowhere else. Submitting here would silently "
+                "return sasa = null for every residue -- the exact value pdb_id was "
+                "set to obtain. Use runner 'aggreprot_web' "
+                "(AggreProtWebRunner.recipe(fasta) gives the click sequence, then pass "
+                "the job id back), or clear pdb_id to accept a structure-free run."
+            )
         return {
             "title": self.job_title,
             "email": self.email,

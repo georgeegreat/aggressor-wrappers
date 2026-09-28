@@ -9,7 +9,7 @@ import pytest
 
 from aggressor_wrappers.batch.pipeline import run_multifasta_pipeline
 from aggressor_wrappers.predictors.crossbeta import CrossBetaParser
-from aggressor_wrappers.runners.crossbeta import CrossBetaRunner
+from aggressor_wrappers.runners.crossbeta_v2 import CrossBeta2Runner
 from aggressor_wrappers.runners.registry import get_runner, list_runners
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -26,8 +26,10 @@ def test_crossbeta_runner_registered() -> None:
 
 def test_get_runner_crossbeta_from_config() -> None:
     runner = get_runner("crossbeta")
-    assert isinstance(runner, CrossBetaRunner)
-    assert runner.threshold == pytest.approx(0.54)
+    # The web arm is the Cross-Beta-Pred 2.0 REST API. The CAPTCHA-refusing
+    # form runner is retired to legacy/runners/: its refusal was based on the
+    # page form, not the service, and the job API accepts anonymous submissions.
+    assert isinstance(runner, CrossBeta2Runner)
     assert runner.window_size == "auto"
     assert runner.confidence_threshold == pytest.approx(0.54)
 
@@ -79,3 +81,21 @@ def test_batch_pipeline_skip_run_crossbeta(tmp_path: Path) -> None:
     assert set(merged) == {"APP"}
     assert (out / "cross-beta-predictor" / "parsed" / "APP_cross-beta-predictor.csv").is_file()
     assert any("[Cross-Beta]" in line for line in logs)
+
+
+def test_the_retired_form_runner_is_out_of_the_package():
+    """No registry key could construct it even before the move.
+
+    Both `crossbeta` and `crossbeta2` resolved to CrossBeta2Runner, so the
+    CAPTCHA-refusing runner was unreachable code that still looked like a
+    supported path. The parser it used stays live.
+    """
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("aggressor_wrappers.runners.crossbeta")
+
+    from aggressor_wrappers.predictors.registry import get_parser
+
+    assert type(get_parser("crossbeta")).__name__ == "CrossBetaParser"
+

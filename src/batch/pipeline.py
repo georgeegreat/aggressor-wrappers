@@ -22,6 +22,7 @@ from aggressor_wrappers.batch.scheduler import (
 from aggressor_wrappers.core.config import load_config, runner_batch_config
 from aggressor_wrappers.core.fasta import read_fasta
 from aggressor_wrappers.core.merge import merge_predictor_tables
+from aggressor_wrappers.core.net import PermanentToolError
 from aggressor_wrappers.core.schema import get_predictor_spec, read_standard_csv, resolve_predictor_key
 from aggressor_wrappers.predictors.registry import get_parser, list_parsers
 from aggressor_wrappers.runners.registry import get_runner, list_runners
@@ -326,106 +327,163 @@ def _run_runner_batches(
         )
         return
 
+    # A permanent refusal is a property of ONE submission, not of the predictor:
+    # a single sequence carrying an X should cost that protein, not the other
+    # 371. Transient errors still propagate, because retrying is the right
+    # response to those and the scheduler owns it.
+    refused: list[tuple[str, list[str], BaseException]] = []
+    completed = 0
+
     for batch_index, batch in enumerate(batches, start=1):
         batch_label = f"{batch_index}/{total_batches}"
         batch_ids = [protein_id for protein_id, _ in batch]
         work_root = layout.predictor_work_dir(runner_key)
-        batch_fasta = work_root / f"batch_{batch_index}.fasta"
-        write_fasta_records(dict(batch), batch_fasta)
-        batch_work = work_root / f"batch_{batch_index}"
+        try:
+            batch_fasta = work_root / f"batch_{batch_index}.fasta"
+            write_fasta_records(dict(batch), batch_fasta)
+            batch_work = work_root / f"batch_{batch_index}"
 
-        if runner_key == "appnn":
-            raw_map = _run_appnn_batch(
-                runner,
-                batch_fasta,
-                batch_work,
-                batch_ids,
-                skip_run=skip_run,
-                save_raw_files=save_raw_files,
-                batch_label=batch_label,
-                emit=emit,
-            )
-        elif runner_key == "waltz":
-            raw_map = _run_waltz_batch(
-                runner,
-                batch_fasta,
-                batch_work,
-                batch_ids,
-                skip_run=skip_run,
-                save_raw_files=save_raw_files,
-                batch_label=batch_label,
-                emit=emit,
-            )
-        elif runner_key == "pasta":
-            raw_map = _run_pasta_batch(
-                runner,
-                batch_fasta,
-                batch_work,
-                batch_ids,
-                skip_run=skip_run,
-                save_raw_files=save_raw_files,
-                batch_label=batch_label,
-                emit=emit,
-            )
-        elif runner_key == "archcandy":
-            raw_map = _run_archcandy_batch(
-                runner,
-                batch_fasta,
-                batch_work,
-                batch_ids,
-                skip_run=skip_run,
-                save_raw_files=save_raw_files,
-                batch_label=batch_label,
-                emit=emit,
-            )
-        elif runner_key == "crossbeta":
-            raw_map = _run_crossbeta_batch(
-                runner,
-                batch_fasta,
-                batch_work,
-                batch_ids,
-                skip_run=skip_run,
-                save_raw_files=save_raw_files,
-                batch_label=batch_label,
-                emit=emit,
-            )
-        elif runner_key == "aggreprot":
-            raw_map = _run_aggreprot_batch(
-                runner,
-                batch_fasta,
-                batch_work,
-                batch_ids,
-                skip_run=skip_run,
-                save_raw_files=save_raw_files,
-                batch_label=batch_label,
-                emit=emit,
-            )
-        elif runner_key == "path":
-            raw_map = _run_path_batch(
-                runner,
-                batch_fasta,
-                batch_work,
-                batch_ids,
-                skip_run=skip_run,
-                save_raw_files=save_raw_files,
-                batch_label=batch_label,
-                emit=emit,
-            )
-        else:
-            raise RuntimeError(f"Batch runner not implemented for {runner_key!r}")
+            if runner_key == "appnn":
+                raw_map = _run_appnn_batch(
+                    runner,
+                    batch_fasta,
+                    batch_work,
+                    batch_ids,
+                    skip_run=skip_run,
+                    save_raw_files=save_raw_files,
+                    batch_label=batch_label,
+                    emit=emit,
+                )
+            elif runner_key == "waltz":
+                raw_map = _run_waltz_batch(
+                    runner,
+                    batch_fasta,
+                    batch_work,
+                    batch_ids,
+                    skip_run=skip_run,
+                    save_raw_files=save_raw_files,
+                    batch_label=batch_label,
+                    emit=emit,
+                )
+            elif runner_key == "pasta":
+                raw_map = _run_pasta_batch(
+                    runner,
+                    batch_fasta,
+                    batch_work,
+                    batch_ids,
+                    skip_run=skip_run,
+                    save_raw_files=save_raw_files,
+                    batch_label=batch_label,
+                    emit=emit,
+                )
+            elif runner_key == "archcandy":
+                raw_map = _run_archcandy_batch(
+                    runner,
+                    batch_fasta,
+                    batch_work,
+                    batch_ids,
+                    skip_run=skip_run,
+                    save_raw_files=save_raw_files,
+                    batch_label=batch_label,
+                    emit=emit,
+                )
+            elif runner_key == "crossbeta":
+                raw_map = _run_crossbeta_batch(
+                    runner,
+                    batch_fasta,
+                    batch_work,
+                    batch_ids,
+                    skip_run=skip_run,
+                    save_raw_files=save_raw_files,
+                    batch_label=batch_label,
+                    emit=emit,
+                )
+            elif runner_key == "aggreprot":
+                raw_map = _run_aggreprot_batch(
+                    runner,
+                    batch_fasta,
+                    batch_work,
+                    batch_ids,
+                    skip_run=skip_run,
+                    save_raw_files=save_raw_files,
+                    batch_label=batch_label,
+                    emit=emit,
+                )
+            elif runner_key == "path":
+                raw_map = _run_path_batch(
+                    runner,
+                    batch_fasta,
+                    batch_work,
+                    batch_ids,
+                    skip_run=skip_run,
+                    save_raw_files=save_raw_files,
+                    batch_label=batch_label,
+                    emit=emit,
+                )
+            else:
+                raw_map = _run_generic_batch(
+                    runner,
+                    runner_key,
+                    batch_fasta,
+                    batch_work,
+                    batch_ids,
+                    skip_run=skip_run,
+                    save_raw_files=save_raw_files,
+                    batch_label=batch_label,
+                    emit=emit,
+                )
 
-        _parse_and_write_runner_batch(
-            runner,
-            runner_key,
-            batch_ids,
-            raw_map,
-            layout,
-            batch_work,
-            batch_label=batch_label,
-            skip_run=skip_run,
-            save_raw_files=save_raw_files,
-            emit=emit,
+            _parse_and_write_runner_batch(
+                runner,
+                runner_key,
+                batch_ids,
+                raw_map,
+                layout,
+                batch_work,
+                batch_label=batch_label,
+                skip_run=skip_run,
+                save_raw_files=save_raw_files,
+                emit=emit,
+            )
+        except PermanentToolError as exc:
+            refused.append((batch_label, batch_ids, exc))
+            continue
+        completed += 1
+
+    _report_refusals(tag, refused, completed=completed, emit=emit)
+
+
+def _report_refusals(
+    tag: str,
+    refused: list[tuple[str, list[str], BaseException]],
+    *,
+    completed: int,
+    emit: LogFn,
+) -> None:
+    """Summarise per-submission refusals; re-raise only if none got through.
+
+    If some batches produced output the predictor did its job for those
+    proteins, so the run continues and the affected ids are named in the log --
+    they will be visible downstream as a smaller consensus denominator for those
+    proteins. If NOTHING got through the refusal is about the predictor or the
+    whole input, and it is raised so the scheduler records the predictor as
+    skipped rather than as silently empty.
+    """
+    if not refused:
+        return
+    ids = [protein_id for _, batch_ids, _ in refused for protein_id in batch_ids]
+    for batch_label, batch_ids, exc in refused:
+        emit(f"[{tag}] batch {batch_label} REFUSED for {', '.join(batch_ids)}: {exc}")
+    if completed:
+        emit(
+            f"[{tag}] {len(ids)} sequence(s) refused, {completed} batch(es) "
+            f"completed; continuing without: {', '.join(ids)}"
         )
+        return
+    raise PermanentToolError(
+        f"{tag}: every submission was refused ({len(ids)} sequence(s)). "
+        f"First reason: {refused[0][2]}"
+    )
 
 
 def _run_archcandy_parallel(
@@ -585,6 +643,46 @@ def _run_path_parallel(
             future.result()
 
 
+#: Keyword names runners use for "parse this file instead of running".
+#: Ordered by specificity so a runner declaring several still gets the right one.
+_RAW_KEYWORDS = (
+    "results_csv",
+    "raw_profile",
+    "raw_json",
+    "raw_txt",
+    "raw_csv",
+    "raw_path",
+)
+
+
+def _raw_kwarg(runner, raw_path) -> dict:
+    """Pass the raw file under the keyword this runner actually declares.
+
+    This replaced a hardcoded map of runner_key -> keyword. Any runner missing
+    from that map received `raw_csv=None` together with `skip_run=True`, so it
+    raised its own "provide raw_csv when --skip-run is set" — from a pipeline the
+    caller had NOT put in skip-run mode, which made the message actively
+    misleading. FoldAmyloid and AGGRESCAN failed exactly this way on a full
+    panel, having been written correctly and simply not added to the list.
+
+    Resolving against the signature means adding a predictor no longer requires
+    editing this function, and a runner that declares no raw keyword at all is
+    reported here rather than at its own error site.
+    """
+    import inspect
+
+    parameters = inspect.signature(runner.run).parameters
+    for name in _RAW_KEYWORDS:
+        if name in parameters:
+            return {name: raw_path}
+    if any(p.kind is p.VAR_KEYWORD for p in parameters.values()):
+        return {"raw_csv": raw_path}
+    raise TypeError(
+        f"{type(runner).__name__}.run() declares none of {list(_RAW_KEYWORDS)}, "
+        f"so a pre-fetched raw file cannot be handed to it for parsing."
+    )
+
+
 def _parse_and_write_runner_batch(
     runner,
     runner_key: str,
@@ -608,11 +706,7 @@ def _parse_and_write_runner_batch(
             protein_id=protein_id,
             work_dir=batch_work,
             skip_run=True,
-            results_csv=raw_csv if runner_key == "path" else None,
-            raw_csv=raw_csv if runner_key in {"appnn", "archcandy", "aggreprot"} else None,
-            raw_json=raw_csv if runner_key == "crossbeta" else None,
-            raw_txt=raw_csv if runner_key == "waltz" else None,
-            raw_profile=raw_csv if runner_key == "pasta" else None,
+            **_raw_kwarg(runner, raw_csv),
         )
         out_csv = layout.predictor_parsed_dir(runner_key) / f"{protein_id}_{tag}.csv"
         result.to_csv(out_csv)
@@ -626,6 +720,59 @@ def _parse_and_write_runner_batch(
                 predictor_key=runner_key,
             )
             emit(f"[{tag}] archived raw → {archived}")
+
+
+def _run_generic_batch(
+    runner,
+    runner_key: str,
+    batch_fasta: Path,
+    batch_work: Path,
+    protein_ids: list[str],
+    *,
+    skip_run: bool,
+    save_raw_files: Path | None,
+    batch_label: str,
+    emit: LogFn,
+) -> dict[str, Path]:
+    """Batch path for any runner exposing ``execute_batch`` + ``discover_outputs``.
+
+    This replaces the tail of an ``if runner_key == ...`` ladder that raised
+    "Batch runner not implemented" for anything not explicitly listed. Adding a
+    predictor therefore required editing the scheduler as well as writing the
+    runner, and forgetting the second edit failed at RUN time on a full panel —
+    which is how FoldAmyloid and AGGRESCAN, both of which implement the batch
+    protocol correctly, aborted a 372-protein sweep.
+
+    ``execute_batch`` implementations differ in whether they return the work
+    directory or the single file they wrote, so the result is normalised to a
+    directory before discovery rather than each runner being made to conform.
+    """
+    label = getattr(getattr(runner, "spec", None), "display_name", None) or runner_key
+
+    if skip_run:
+        emit(f"[{label}] batch {batch_label}: loading raw from {batch_work} …")
+        raw_map = runner.discover_outputs(batch_work, protein_ids)
+        if not raw_map and save_raw_files is not None:
+            raw_map = _archived_runner_outputs(save_raw_files, protein_ids, runner_key)
+        if not raw_map:
+            raise FileNotFoundError(
+                f"[{label}] batch {batch_label}: no raw output under {batch_work} "
+                f"or {save_raw_files} (--skip-run)"
+            )
+        return raw_map
+
+    emit(f"[{label}] batch {batch_label}: submitting {len(protein_ids)} sequence(s) …")
+    produced = Path(runner.execute_batch(batch_fasta, batch_work))
+    output_dir = produced if produced.is_dir() else produced.parent
+    emit(f"[{label}] batch {batch_label}: raw files in {output_dir}")
+
+    raw_map = runner.discover_outputs(output_dir, protein_ids)
+    missing = [pid for pid in protein_ids if pid not in raw_map]
+    if missing:
+        raise FileNotFoundError(
+            f"[{label}] batch {batch_label}: missing output for: {', '.join(missing)}"
+        )
+    return raw_map
 
 
 def _run_appnn_batch(

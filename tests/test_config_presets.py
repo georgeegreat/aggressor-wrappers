@@ -85,6 +85,9 @@ def test_pipeline_predictors_from_config() -> None:
     from aggressor_wrappers.core.config import default_pipeline_predictors
 
     # PATH is opt-in (licensed deps: Modeller + PyRosetta), not a default.
+    # TANGO is licensed and local-only, AmyloGram and AmyloDeep need a local
+    # interpreter, so none of the three can be a default either -- a default set
+    # must run on a clean checkout with nothing installed.
     assert default_pipeline_predictors() == [
         "appnn",
         "waltz",
@@ -92,7 +95,11 @@ def test_pipeline_predictors_from_config() -> None:
         "archcandy",
         "crossbeta",
         "aggreprot",
+        "foldamyloid",
+        "aggrescan",
     ]
+    for opt_in in ("path", "tango", "amylogram", "amylodeep"):
+        assert opt_in not in default_pipeline_predictors()
 
 
 def test_guess_predictor_import() -> None:

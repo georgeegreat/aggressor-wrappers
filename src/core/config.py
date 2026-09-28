@@ -138,7 +138,18 @@ def _active_weights(
 
 
 def _read_config_parser(config_path: Path) -> configparser.ConfigParser:
-    parser = configparser.ConfigParser(interpolation=None)
+    # inline_comment_prefixes is REQUIRED, not cosmetic. Without it configparser
+    # keeps everything after the '=' verbatim, so a line such as
+    #     threshold = 0.57 # 0.4
+    # yields the string "0.57 # 0.4". _coerce_option_value then fails to parse it
+    # as a number and falls through to returning the raw string, which reaches the
+    # runner constructor and dies there on float() -- far from the config line that
+    # caused it. This is how ArchCandy stopped running while its config still
+    # looked correct. Both '#' and ';' are recognised, and only when preceded by
+    # whitespace, so a '#' inside a URL fragment or a password is preserved.
+    parser = configparser.ConfigParser(
+        interpolation=None, inline_comment_prefixes=("#", ";")
+    )
     parser.optionxform = str  # preserve key casing
     read_ok = parser.read(config_path, encoding="utf-8")
     if not read_ok:

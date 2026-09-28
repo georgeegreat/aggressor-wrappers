@@ -37,6 +37,77 @@ from aggressor_wrappers.predictors.amylodeep import parse_amylodeep
 from aggressor_wrappers.runners.base import BasePredictorRunner
 
 
+def _signal_report(signal_number: int, sequence: str, output: str) -> str:
+    """Name the signal, because a native crash leaves nothing else behind.
+
+    ``subprocess.run`` returns a NEGATIVE returncode when the child died on a
+    signal, and that number was being discarded: the caller got "AmyloDeep
+    produced no output" with an empty stdout/stderr, because a crash inside a
+    compiled extension never reaches Python's excepthook. The signal is the only
+    evidence the run leaves in-process, so it is reported first.
+
+    The distinction that matters is SIGSEGV vs SIGKILL. Out of memory on macOS
+    and Linux kills the process (SIGKILL, or the OOM killer), and Python raises
+    MemoryError when the allocation is its own; a SIGSEGV is a bad memory access
+    inside native code and is not a sign of insufficient RAM. Saying so stops the
+    obvious-but-wrong conclusion that a bigger machine would help.
+    """
+    import signal as _signal
+
+    try:
+        name = _signal.Signals(signal_number).name
+    except ValueError:  # pragma: no cover - unknown platform signal
+        name = f"signal {signal_number}"
+
+    lines = [
+        f"AmyloDeep died on {name} ({signal_number}) after "
+        f"{len(sequence)} residues of input, without writing output."
+    ]
+    if signal_number in (_signal.SIGSEGV, getattr(_signal, "SIGBUS", None), _signal.SIGILL):
+        lines += [
+            "",
+            "This is a crash inside a compiled extension, NOT an out-of-memory "
+            "condition: an OOM shows up as SIGKILL (or the OOM killer), and an "
+            "allocation Python itself made raises MemoryError. Adding RAM will "
+            "not change this.",
+            "",
+            "AmyloDeep loads two independent numerical stacks in ONE process -- "
+            "ESM2 through PyTorch and UniRep through jax_unirep/JAX -- which is "
+            "the usual source of this failure: each ships its own OpenMP runtime, "
+            "and loading both crashes on macOS. In that case:",
+            "  * try KMP_DUPLICATE_LIB_OK=TRUE as a diagnostic (it confirms the "
+            "cause; it is not a fix),",
+            "  * or install torch and jaxlib from ONE channel into a clean env.",
+            "A wheel built for a different CPU (an x86_64 build under Rosetta on "
+            "Apple Silicon, or AVX-512 on a machine without it) produces the same "
+            "signal; `python -c \"import platform; print(platform.machine())\"` "
+            "inside the AmyloDeep environment settles that.",
+            "",
+            "Sequence length is unlikely to be the cause: AmyloDeep scores a "
+            "RUNNING WINDOW (default 10 residues), so a long protein is many "
+            "small inferences rather than one large one, and its own preprint "
+            "reports no maximum length. Confirm with a short peptide -- if a "
+            "10-mer crashes too, the input is not the variable.",
+        ]
+    elif signal_number == _signal.SIGKILL:
+        lines += [
+            "",
+            "SIGKILL with no output is what an out-of-memory kill looks like. "
+            "Check the per-window batch: AmyloDeep embeds every window with ESM2, "
+            "so peak memory scales with window count, not with sequence length "
+            "alone.",
+        ]
+    if output.strip():
+        lines += ["", f"Captured output: {output.strip()[:400]}"]
+    else:
+        lines += [
+            "",
+            "The child wrote nothing to stdout or stderr, which is expected for a "
+            "native crash and is why this runner reports the signal rather than "
+            "quoting the output.",
+        ]
+    return "\n".join(lines)
+
 class AmyloDeepRunner(BasePredictorRunner):
     """Execute the local ``amylodeep`` CLI, one invocation per sequence."""
 
@@ -49,6 +120,9 @@ class AmyloDeepRunner(BasePredictorRunner):
         threshold: float = 0.5,
         output_format: str = "csv",
         timeout_seconds: int = 1800,
+        window_size: int | None = None,
+        aggregate: str | None = None,
+        resolution: str | None = "residue",
         **_ignored,
     ) -> None:
         self.executable = executable
@@ -64,6 +138,26 @@ class AmyloDeepRunner(BasePredictorRunner):
             raise ValueError("output_format must be 'csv' or 'json'")
         self.output_format = output_format
         self.timeout_seconds = int(timeout_seconds)
+        # Ask for the grain rather than inherit it. AmyloDeep 0.3's CLI wrote one
+        # row per window at window 10; 0.4 writes one row per residue at window 6.
+        # Left implicit, the same config would produce two different profiles
+        # depending only on which version happens to be installed, and the shift
+        # is the kind that survives inspection. resolution=None omits the flag,
+        # for an installation that predates it.
+        # A config file expresses "omit this flag" as an empty value, so an empty
+        # string means the same as None here rather than failing validation.
+        resolution = resolution or None
+        aggregate = aggregate or None
+        window_size = window_size if window_size not in (None, "") else None
+        if resolution not in (None, "residue", "window", "both"):
+            raise ValueError("resolution must be 'residue', 'window', 'both' or None")
+        if aggregate not in (None, "mean", "max", "support"):
+            raise ValueError("aggregate must be 'mean', 'max', 'support' or None")
+        if window_size is not None and int(window_size) < 1:
+            raise ValueError("window_size must be >= 1")
+        self.resolution = resolution
+        self.aggregate = aggregate
+        self.window_size = None if window_size is None else int(window_size)
         self.last_raw_path: Path | None = None
 
     # ------------------------------------------------------------------ #
@@ -79,7 +173,14 @@ class AmyloDeepRunner(BasePredictorRunner):
 
     # ------------------------------------------------------------------ #
     def _argv(self, sequence: str, dest: Path) -> list[str]:
-        args = ["--output", str(dest), "--format", self.output_format, sequence]
+        args = ["--output", str(dest), "--format", self.output_format]
+        if self.resolution is not None:
+            args += ["--resolution", self.resolution]
+        if self.window_size is not None:
+            args += ["--window-size", str(self.window_size)]
+        if self.aggregate is not None:
+            args += ["--aggregate", self.aggregate]
+        args.append(sequence)
         if self.use_compat_shim:
             from aggressor_wrappers.core.compat import write_amylodeep_bootstrap
 
@@ -99,6 +200,8 @@ class AmyloDeepRunner(BasePredictorRunner):
         )
         if not dest.exists():
             combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+            if proc.returncode is not None and proc.returncode < 0:
+                raise RuntimeError(_signal_report(-proc.returncode, sequence, combined))
             if "huggingface.co" in combined or "Hub" in combined:
                 raise RuntimeError(
                     "AmyloDeep could not fetch its model weights from huggingface.co. "
@@ -111,6 +214,15 @@ class AmyloDeepRunner(BasePredictorRunner):
                     "AmyloDeep's dependency jax_unirep imports pkg_resources, which "
                     "setuptools >= 81 removed. Install `setuptools<81` in the same "
                     f"environment.\n{combined[:300]}"
+                )
+            if "unrecognized arguments" in combined or "invalid choice" in combined:
+                raise RuntimeError(
+                    "The installed amylodeep rejected a flag this runner passed, so "
+                    "it predates the per-residue output (0.4). Upgrade it, or set "
+                    "resolution/aggregate/window_size to None in the amylodeep "
+                    "section of config.cfg to fall back to that version's defaults "
+                    "-- the parser still reads a 0.3 window table, projecting it "
+                    f"with `max`.\n{combined[:400]}"
                 )
             raise RuntimeError(f"AmyloDeep produced no output.\n{combined[:400]}")
         return dest

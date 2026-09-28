@@ -13,14 +13,49 @@ convenient.
 
 Defaults, all overridable:
 
-``window = 6``
-    AmyloGram's training unit. Windows are taken with step 1, so a residue is
-    typically covered by up to six of them.
-``aggregation = "max"``
-    A residue takes the highest probability among the windows covering it. The
-    alternative, ``mean``, smooths the profile but dilutes a single strongly
-    amyloidogenic hexapeptide against its weaker neighbours — the same argument
-    that makes ``highest`` preferable to ``cumulative`` for ArchCandy.
+``windows = (6,)``
+    AmyloGram's training unit. Windows are taken with step 1, so an interior
+    residue is covered by exactly *w* of them.
+
+    Several widths may be requested, and each is projected separately and kept
+    as a ``w{n}_Score`` column so boundary sensitivity can be examined without
+    re-querying. Be explicit about what that means, though: AmyloGram was fitted
+    on hexapeptides, so a query longer than 6 is outside its training
+    distribution and its probability is not calibrated there. Widths above 6 are
+    a sensitivity device, not a better prediction, and the runner warns when one
+    is used. To broaden APR extent while staying in-regime, lower
+    ``support_fraction`` instead — that changes how 6-mer evidence is pooled, not
+    what the model was asked.
+``aggregation = "support"``
+    How the probabilities of the windows covering a residue collapse into one
+    score. This is the consequential choice, and neither extreme is right.
+
+    ``max`` asks only that a residue lie in *at least one* amyloidogenic
+    hexapeptide. One positive 6-mer therefore raises all six of its residues, so
+    every called region is inflated by up to *w*-1 = 5 residues at each end. On
+    Abeta42 ``max`` returns 14-25 where the nucleating segment is KLVFFA
+    (16-21).
+
+    ``mean`` asks for the average, which dilutes a single strongly amyloidogenic
+    hexapeptide against its weaker neighbours and contracts regions onto their
+    peaks. (The ArchCandy ``highest``-over-``cumulative`` argument is NOT the
+    same one: there the defect is that summing leaves the tool's [0, 1] scale
+    entirely. Here both rules stay on scale; what changes is APR extent.)
+
+    ``support`` (default) makes the strictness explicit rather than implicit. A
+    residue's score is the quantile of its covering-window probabilities at
+    level ``1 - support_fraction``, so ``support_fraction`` reads directly as
+    *what proportion of the hexapeptide evidence covering this residue must be
+    positive*. ``1/window`` reproduces ``max``, ``0.5`` gives the median, ``1.0``
+    gives the minimum. The default 0.5 asks for majority support.
+
+    Why this matters biologically: the hexapeptide is the unit of the steric
+    zipper, but it is not the unit of an APR. Many experimentally confirmed
+    amyloid cores are far broader than six residues — the alpha-synuclein NAC
+    region spans ~35, prion-forming domains span tens — and a rule that calls a
+    residue on single-window evidence and a rule that demands unanimous support
+    give materially different extents for exactly those cases. Fixing the rule
+    silently at either extreme hides that decision inside a projection step.
 ``threshold = 0.5``
     The model returns a probability, so 0.5 is the natural cut; it is exposed
     because the operating point should be chosen against whatever validation set
@@ -32,14 +67,16 @@ query for a hexapeptide model, and silently returning an empty profile would
 remove the tool from the consensus without saying so.
 """
 
-from __future__ import annotations
-
+import math
 from pathlib import Path
 
 import pandas as pd
 
 DEFAULT_WINDOW = 6
-DEFAULT_AGGREGATION = "max"
+DEFAULT_WINDOWS = (6,)
+DEFAULT_AGGREGATION = "support"
+DEFAULT_SUPPORT_FRACTION = 0.5
+VALID_AGGREGATIONS = frozenset({"max", "min", "mean", "median", "quantile", "support"})
 
 
 def sliding_windows(sequence: str, window: int = DEFAULT_WINDOW) -> list[tuple[int, str]]:
@@ -70,17 +107,63 @@ def write_peptide_fasta(
     return windows
 
 
+def _aggregate(
+    values: list[float],
+    *,
+    aggregation: str,
+    support_fraction: float,
+    quantile: float,
+) -> float:
+    """Collapse the probabilities of the windows covering one residue."""
+    if not values:
+        return 0.0
+    ordered = sorted(values, reverse=True)
+    n = len(ordered)
+    if aggregation == "max":
+        return ordered[0]
+    if aggregation == "min":
+        return ordered[-1]
+    if aggregation == "mean":
+        return sum(ordered) / n
+    if aggregation == "median":
+        mid = n // 2
+        return ordered[mid] if n % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+    if aggregation == "quantile":
+        # quantile of the DESCENDING order: q=0 -> max, q=1 -> min.
+        idx = min(n - 1, max(0, int(round(quantile * (n - 1)))))
+        return ordered[idx]
+    if aggregation == "support":
+        # The score a residue attains if `support_fraction` of its covering
+        # windows must be at least that high. Index into the descending order at
+        # ceil(f * n) - 1: f = 1/n -> ordered[0] (max), f = 1 -> ordered[-1].
+        k = max(1, min(n, math.ceil(support_fraction * n)))
+        return ordered[k - 1]
+    raise ValueError(f"unknown aggregation {aggregation!r}")
+
+
 def project_windows(
     windows: list[tuple[int, str]],
     probabilities: dict[str, float] | list[float],
     sequence_length: int,
     *,
     aggregation: str = DEFAULT_AGGREGATION,
+    support_fraction: float = DEFAULT_SUPPORT_FRACTION,
+    quantile: float = 0.5,
     prefix: str = "w",
 ) -> list[float]:
-    """Map per-window probabilities onto per-residue scores."""
-    if aggregation not in ("max", "mean"):
-        raise ValueError("aggregation must be 'max' or 'mean'")
+    """Map per-window probabilities onto per-residue scores.
+
+    The covering windows of each residue are collected first and reduced
+    afterwards, rather than folded in as they arrive. That costs one list per
+    residue and buys every order-dependent rule -- median, quantile, support --
+    which a running max or running sum cannot express.
+    """
+    if aggregation not in VALID_AGGREGATIONS:
+        raise ValueError(
+            f"aggregation must be one of {sorted(VALID_AGGREGATIONS)}; got {aggregation!r}"
+        )
+    if not 0.0 < support_fraction <= 1.0:
+        raise ValueError(f"support_fraction must be in (0, 1]; got {support_fraction}")
 
     if isinstance(probabilities, dict):
         probs = []
@@ -97,20 +180,41 @@ def project_windows(
             )
         probs = [float(p) for p in probabilities]
 
-    totals = [0.0] * sequence_length
-    counts = [0] * sequence_length
+    covering: list[list[float]] = [[] for _ in range(sequence_length)]
     for (start, peptide), prob in zip(windows, probs, strict=True):
         for offset in range(len(peptide)):
             idx = start - 1 + offset
             if 0 <= idx < sequence_length:
-                if aggregation == "max":
-                    totals[idx] = max(totals[idx], prob)
-                else:
-                    totals[idx] += prob
-                counts[idx] += 1
-    if aggregation == "mean":
-        return [t / c if c else 0.0 for t, c in zip(totals, counts, strict=True)]
-    return totals
+                covering[idx].append(prob)
+
+    return [
+        _aggregate(
+            values,
+            aggregation=aggregation,
+            support_fraction=support_fraction,
+            quantile=quantile,
+        )
+        for values in covering
+    ]
+
+
+def coverage_depth(sequence_length: int, window: int) -> list[int]:
+    """Number of windows covering each residue.
+
+    Terminal residues are covered by fewer windows than interior ones -- residue
+    1 by a single window, residue *w* by *w*. Any rule other than ``max`` is
+    therefore evaluated over a smaller sample at the termini, which is the same
+    edge effect that inflates wide-probe scores in amyloid_predict. Exposed so a
+    caller can down-weight or mask the first and last *w*-1 positions rather
+    than discovering the asymmetry in a figure.
+    """
+    depth = [0] * sequence_length
+    for start, _ in sliding_windows("X" * sequence_length, window):
+        for offset in range(min(window, sequence_length)):
+            idx = start - 1 + offset
+            if 0 <= idx < sequence_length:
+                depth[idx] += 1
+    return depth
 
 
 def parse_amylogram_output(path: str | Path) -> dict[str, float]:
@@ -122,14 +226,21 @@ def parse_amylogram_output(path: str | Path) -> dict[str, float]:
     df = pd.read_csv(path)
     df.columns = [str(c).strip() for c in df.columns]
 
+    # Matching is case-insensitive on purpose. The bundled helper script writes
+    # 'name,probability', but AmyloGram's own predict.ag_model returns a data
+    # frame with 'Name' and 'Probability', and a user who exports that directly
+    # (or opens the CSV in a spreadsheet first) would otherwise hit a confusing
+    # "expected an id column" error on a file that plainly has one.
+    lowered = {str(c).lower(): c for c in df.columns}
     id_col = next(
-        (c for c in ("name", "id", "seq_name", "sequence_id") if c in df.columns), None
+        (lowered[c] for c in ("name", "id", "seq_name", "sequence_id") if c in lowered),
+        None,
     )
     prob_col = next(
         (
-            c
-            for c in ("probability", "prob", "AmyloGram_probability", "Probability")
-            if c in df.columns
+            lowered[c]
+            for c in ("probability", "prob", "amylogram_probability", "score")
+            if c in lowered
         ),
         None,
     )
@@ -143,31 +254,31 @@ def parse_amylogram_output(path: str | Path) -> dict[str, float]:
     }
 
 
-R_SCRIPT = r"""#!/usr/bin/env Rscript
-# Score peptides with AmyloGram and write id,probability as CSV.
-# Deliberately minimal: the windowing and the projection back onto residues are
-# done in Python, where they are testable and where the modelling choice is
-# visible, rather than being buried in an R helper.
-suppressMessages({
-  library(AmyloGram)
-  library(seqinr)
-})
-args <- commandArgs(trailingOnly = TRUE)
-if (length(args) < 2) stop("usage: amylogram_predict.R <peptides.fasta> <out.csv>")
-fasta_path <- args[[1]]
-out_path   <- args[[2]]
 
-seqs <- seqinr::read.fasta(fasta_path, seqtype = "AA", as.string = FALSE)
-data(AmyloGram_model, package = "AmyloGram", envir = environment())
-pred <- predict(AmyloGram_model, seqs)
+def to_per_residue_frame(
+    sequence: str,
+    scores: list[float],
+    *,
+    protein_id: str = "",
+) -> "pd.DataFrame":
+    """Return the ``Number, Residue, Score`` table amyloscope adapters expect.
 
-prob <- if (is.data.frame(pred)) {
-  col <- intersect(c("Probability", "probability", "prob"), colnames(pred))
-  if (length(col) == 0) pred[[ncol(pred)]] else pred[[col[[1]]]]
-} else as.numeric(pred)
-
-write.csv(
-  data.frame(name = names(seqs), probability = prob, stringsAsFactors = FALSE),
-  out_path, row.names = FALSE, quote = FALSE
-)
-"""
+    AmyloGram is the only tool in the panel whose native output is per *peptide*
+    rather than per residue, so the projection performed here is the point at
+    which its evidence becomes commensurable with WALTZ, FoldAmyloid and the
+    rest. Writing that table out explicitly — rather than leaving the projection
+    implicit inside a consensus call — keeps the modelling step auditable: the
+    file on disk is exactly what the consensus counted.
+    """
+    if len(scores) != len(sequence):
+        raise ValueError(
+            f"{protein_id or 'sequence'}: {len(scores)} projected scores for "
+            f"{len(sequence)} residues"
+        )
+    return pd.DataFrame(
+        {
+            "Number": range(1, len(sequence) + 1),
+            "Residue": list(sequence),
+            "Score": [float(s) for s in scores],
+        }
+    )

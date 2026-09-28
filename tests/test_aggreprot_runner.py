@@ -124,3 +124,55 @@ def test_batch_pipeline_skip_run_aggreprot(tmp_path: Path) -> None:
     assert set(merged) == {"RPL27_human"}
     assert (out / "aggreprot" / "parsed" / "RPL27_human_aggreprot.csv").is_file()
     assert any("[AggreProt]" in line or "[aggreprot]" in line.lower() for line in logs)
+
+
+# --------------------------------------------------------------------------- #
+# pdb_id must not be silently dropped.
+#
+# [runners.aggreprot] pdb_id was accepted by the config and by
+# AggreProtWebRunner, but the runner a panel run actually constructs
+# (AggreProtRunner) did not declare it, so it was filtered out with a warning
+# and the job went through with no structure -- returning sasa = null for every
+# residue, which is precisely the value pdb_id exists to obtain.
+# --------------------------------------------------------------------------- #
+
+
+def test_api_runner_declares_pdb_id_so_the_option_is_not_filtered_away():
+    import inspect
+
+    from aggressor_wrappers.runners.aggreprot import AggreProtRunner
+
+    assert "pdb_id" in inspect.signature(AggreProtRunner.__init__).parameters
+
+
+def test_api_submission_refuses_a_pdb_id_it_cannot_carry():
+    """Loud failure beats a structure-free run that looks successful.
+
+    The PUT payload has no structure channel -- the server rejects structSource
+    and null structure placeholders -- so a pdb_id set here can only be ignored.
+    """
+    import pytest
+
+    from aggressor_wrappers.runners.aggreprot import AggreProtRunner
+
+    runner = AggreProtRunner(pdb_id="1IYT")
+    with pytest.raises(ValueError, match="aggreprot_web"):
+        runner._build_job_request({"ABETA42": "DAEFRHDSGYEVHHQKLVFFAEDVGSNKGAIIGLMVGGVVIA"})
+
+
+def test_api_submission_is_unchanged_when_pdb_id_is_blank():
+    """The configured default (pdb_id =) must stay a working unattended run."""
+    from aggressor_wrappers.runners.aggreprot import AggreProtRunner
+
+    request = AggreProtRunner(pdb_id="  ")._build_job_request(
+        {"ABETA42": "DAEFRHDSGYEVHHQKLVFFAEDVGSNKGAIIGLMVGGVVIA"}
+    )
+    assert [p["accession"] for p in request["proteins"]] == ["ABETA42"]
+    assert not any("struct" in key.lower() for key in request["proteins"][0])
+
+
+def test_config_pdb_id_reaches_the_constructed_runner():
+    from aggressor_wrappers.runners.registry import get_runner
+
+    runner = get_runner("aggreprot", pdb_id="1IYT")
+    assert runner.pdb_id == "1IYT"

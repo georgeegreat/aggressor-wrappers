@@ -13,6 +13,7 @@ from pathlib import Path
 
 from aggressor_wrappers import __version__
 from aggressor_wrappers.core.fasta import read_first_sequence, read_fasta
+from aggressor_wrappers.core.net import PermanentToolError, retry_call
 from aggressor_wrappers.core.schema import PredictorResult
 from aggressor_wrappers.predictors.waltz import WALTZParser, split_detailed_sections
 from aggressor_wrappers.runners.base import BasePredictorRunner
@@ -106,6 +107,95 @@ class WALTZRunner(BasePredictorRunner):
             raise FileNotFoundError(f"WALTZ per-protein output missing: {raw_path}")
         return raw_path
 
+    def fetch_per_residue(self, fasta_path: Path, work_dir: str | Path) -> dict[str, Path]:
+        """Harvest WALTZ's per-residue ``.dat`` files.
+
+        **Only ``output=text_long_graph`` produces them.** Under ``text_long``
+        the archive contains a single region table and nothing positional, so a
+        pipeline configured for ``text_long`` can never generate the
+        ``WaltzJob_<id>_<n>.dat`` files that amyloscope's ``waltz`` adapter
+        reads — which is why that adapter was being pointed at files nobody
+        could regenerate.
+
+        The ``.dat`` layout is ``position<TAB>score``, zero outside
+        position-specific-matrix hits, e.g. for Abeta42 every residue is 0.0
+        except 16-21 at 97.993311 (``KLVFFA``). It is strictly richer than the
+        region table, which is derivable from it as the non-zero runs.
+
+        Files inside the archive are indexed by SUBMISSION ORDER
+        (``..._1.dat``), not by accession, so they are mapped back through the
+        order of the FASTA that was sent. Any reordering between submission and
+        extraction would silently mis-assign one protein's track to another, so
+        the mapping is done here, once, next to the request that fixed it.
+
+        This is a second request when ``output_format`` is not already
+        ``text_long_graph``: WALTZ decides the archive's contents at submission
+        time, so the two outputs cannot be obtained from one job.
+        """
+        cwd = Path(work_dir)
+        cwd.mkdir(parents=True, exist_ok=True)
+        order = list(read_fasta(fasta_path))
+        zip_bytes = self._submit_zip(fasta_path, output_format="text_long_graph")
+        written: dict[str, Path] = {}
+        for name, data in self._extract_members(zip_bytes, ".dat"):
+            index = self._dat_index(name)
+            if index is None or index > len(order):
+                continue
+            accession = order[index - 1]
+            dest = cwd / f"{accession}_waltz.dat"
+            dest.write_bytes(data)
+            written[accession] = dest
+        if not written:
+            raise RuntimeError(
+                "WALTZ returned no .dat members even under text_long_graph; "
+                "the archive layout changed."
+            )
+        return written
+
+    @staticmethod
+    def _dat_index(name: str) -> int | None:
+        match = re.search(r"_(\d+)\.dat$", name)
+        return int(match.group(1)) if match else None
+
+    def _submit_zip(self, fasta_path: Path, *, output_format: str | None = None) -> bytes:
+        """Submit and return the result archive's bytes."""
+        fasta_text = fasta_path.read_text().strip() + "\n"
+        payload = urllib.parse.urlencode(
+            {
+                "sequence": fasta_text,
+                "threshold": str(self.threshold),
+                "ph": str(self.ph),
+                "output": output_format or self.output_format,
+                "Submit": "Submit sequences",
+            }
+        ).encode()
+        results_html = self._post(f"{self.base_url}results.cgi", payload)
+        if "job ran succes" not in results_html.lower():
+            raise RuntimeError(
+                "WALTZ submission failed: success message not found on results page"
+            )
+        match = _RESULTS_LINK_RE.search(results_html)
+        if not match:
+            raise RuntimeError("WALTZ results page missing job link")
+        results_url = urllib.parse.urljoin(self.base_url, match.group(1))
+        detail_html = self._get(results_url)
+        zip_match = _ZIP_LINK_RE.search(detail_html)
+        if not zip_match:
+            raise RuntimeError(f"WALTZ results page missing ZIP link: {results_url}")
+        return self._get_bytes(urllib.parse.urljoin(results_url, zip_match.group(1)))
+
+    @staticmethod
+    def _extract_members(zip_bytes: bytes, suffix: str) -> list[tuple[str, bytes]]:
+        import io
+        import zipfile
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+            return [
+                (name, archive.read(name))
+                for name in sorted(archive.namelist())
+                if name.endswith(suffix)
+            ]
+
     def _submit_and_download(self, fasta_path: Path, dest_txt: Path) -> Path:
         fasta_text = fasta_path.read_text().strip() + "\n"
         payload = urllib.parse.urlencode(
@@ -177,16 +267,29 @@ class WALTZRunner(BasePredictorRunner):
     def _get_bytes(self, url: str) -> bytes:
         request = urllib.request.Request(url, method="GET")
         request.add_header("User-Agent", _USER_AGENT)
-        try:
+        def _call() -> bytes:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 return response.read()
+
+        try:
+            return retry_call(_call)
         except urllib.error.URLError as exc:
             raise RuntimeError(f"WALTZ download failed for {url}: {exc}") from exc
 
     def _read_text(self, request: urllib.request.Request) -> str:
-        try:
+        """Read a WALTZ page, retrying transient TLS/connection drops.
+
+        waltz.switchlab.org closes connections mid-handshake often enough that
+        an unretried run of a few hundred sequences is unlikely to finish: a
+        372-protein sweep died after ~120 with UNEXPECTED_EOF_WHILE_READING and
+        discarded every batch already parsed.
+        """
+        def _call() -> str:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 return response.read().decode("utf-8", errors="replace")
+
+        try:
+            return retry_call(_call)
         except urllib.error.URLError as exc:
             raise RuntimeError(f"WALTZ request failed for {request.full_url}: {exc}") from exc
 
