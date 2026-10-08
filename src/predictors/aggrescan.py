@@ -38,6 +38,12 @@ from aggressor_wrappers.core.schema import PredictorResult, get_predictor_spec
 from aggressor_wrappers.predictors.base import BasePredictorParser
 
 _DELIMITERS = (",", ";", "\t")
+
+#: AGGRESCAN's calibrated a4v Hot Spot boundary (Conchillo-Sole et al., 2007),
+#: matching what ``[runners.aggrescan] hot_spot_threshold`` documents. Used only
+#: when an export carries no Hot Spot marker column, which no export written by
+#: this package does -- but one obtained elsewhere may.
+PUBLISHED_A4V_THRESHOLD = -0.02
 _TRUE_MARKERS = frozenset({"true", "yes", "y", "hs", "hotspot"})
 
 
@@ -90,8 +96,16 @@ class AggrescanParser(BasePredictorParser):
         embed both its calibrated threshold and its length-dependent averaging
         window. Re-deriving them with a fixed ``threshold`` on a4v ignores the
         window, so it is opt-in.
+
+        The fallback threshold is AGGRESCAN's calibrated ``-0.02``, not ``0.0``.
+        A round number is not the tool's number: it is inert whenever the Hot
+        Spot marker is present (it is in every export this package produces),
+        but an export obtained without that column was binarised at the wrong
+        cut, and silently, because a fallback never announces itself.
         """
-        self.threshold = float(threshold) if threshold is not None else 0.0
+        self.threshold = (
+            float(threshold) if threshold is not None else PUBLISHED_A4V_THRESHOLD
+        )
         self.use_tool_flag = bool(use_tool_flag)
 
     def parse(

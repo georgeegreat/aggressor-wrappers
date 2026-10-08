@@ -166,12 +166,20 @@ def test_crossbeta_parser_api_list_format() -> None:
     assert result.binary[0] == 0
 
 
-def test_crossbeta_parser_empty_aa_list(tmp_path: Path) -> None:
+def test_crossbeta_parser_empty_aa_list_raises(tmp_path: Path) -> None:
+    """An empty payload is a failed call, not a negative result.
+
+    This used to return an all-zero track, which made "the service returned
+    nothing" indistinguishable from "Cross-Beta called no APRs". In a fractional
+    consensus that is worse than a missing predictor: a phantom negative voter
+    lowers the agreement fraction of every region in the protein by a vote that
+    was never cast. Every other branch of ``_extract_aa_list`` raises; so does
+    this one now.
+    """
     path = tmp_path / "empty.json"
     path.write_text('[{"prot_name": "sequence_query", "AA_list": []}]')
-    result = CrossBetaParser().parse(path, protein_id="t", sequence=SEQUENCE)
-    assert result.scores == [0.0] * len(SEQUENCE)
-    assert result.binary == [0] * len(SEQUENCE)
+    with pytest.raises(ValueError, match="no per-residue data"):
+        CrossBetaParser().parse(path, protein_id="t", sequence=SEQUENCE)
 
 
 def test_merge_wide_format(waltz_detailed_mini: Path, pasta_energy: Path) -> None:

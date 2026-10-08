@@ -15,8 +15,8 @@ from pathlib import Path
 from aggressor_wrappers import __version__
 from aggressor_wrappers.core.fasta import read_first_sequence, read_fasta
 from aggressor_wrappers.core.net import PermanentToolError, retry_call
-from aggressor_wrappers.core.schema import PredictorResult
-from aggressor_wrappers.predictors.pasta import PASTAParser
+from aggressor_wrappers.core.schema import PredictorResult, get_predictor_spec
+from aggressor_wrappers.predictors.pasta import PASTAParser, PUBLISHED_ENERGY_THRESHOLD
 from aggressor_wrappers.runners.base import BasePredictorRunner
 
 _DEFAULT_BASE_URL = "http://old.protein.bio.unipd.it/pasta2/"
@@ -100,7 +100,25 @@ class PASTARunner(BasePredictorRunner):
         self.thresdrop = thresdrop
         self.poll_interval_seconds = int(poll_interval_seconds)
         self.timeout_seconds = int(timeout_seconds) if timeout_seconds else None
-        self.energy_threshold = float(energy_threshold if energy_threshold is not None else amount)
+        # `amount` and `energy_threshold` are DIFFERENT quantities and the
+        # fallback must not confuse them. `amount` is the web form's submission
+        # parameter: it decides which pairings the PASTA server reports at all.
+        # `energy_threshold` is the per-residue APR cutoff applied to the
+        # returned profile. Defaulting the second to the first meant that
+        # retuning how much the server reports silently retuned what counts as
+        # an APR -- and at the shipped -2.8 that cutoff called 87 % of all
+        # residues, which is how PASTA came to appear in 100 % of the consensus
+        # regions of a 372-protein sweep. The fallback is now the predictor's
+        # own declared default (-5.0, Walsh et al. 2014).
+        if energy_threshold is not None:
+            self.energy_threshold = float(energy_threshold)
+        else:
+            spec = get_predictor_spec("pasta")
+            self.energy_threshold = float(
+                spec.default_threshold
+                if spec.default_threshold is not None
+                else PUBLISHED_ENERGY_THRESHOLD
+            )
         self.archive_filename = archive_filename
         self.last_raw_path: Path | None = None
 

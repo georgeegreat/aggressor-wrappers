@@ -282,3 +282,194 @@ def to_per_residue_frame(
             "Score": [float(s) for s in scores],
         }
     )
+
+
+# --------------------------------------------------------------------------- #
+# Parser
+# --------------------------------------------------------------------------- #
+# AmyloGram had a runner and this projection module but no BasePredictorParser
+# subclass, so `amylogram` was absent from PARSER_REGISTRY. That absence was not
+# inert: `batch.pipeline._merge_protein` gates on `list_parsers()` membership and
+# skipped the predictor with a bare `continue`, so a configured AmyloGram ran on
+# every protein, wrote correct parsed tables, and then never reached a merged
+# table. In the FXR1 orthologue sweep the consensus denominator was 9 where the
+# config declared 10, and nothing in the logs said so.
+#
+# The class below closes that gap. It deliberately accepts BOTH shapes this tool
+# produces, because both exist on disk in a completed run:
+#
+#   per-residue   Number, Residue, Score[, w{n}_Score, coverage_depth]
+#                 written by AmyloGramRunner when write_per_residue is on. Read
+#                 straight through -- the projection has already happened and
+#                 re-deriving it here could silently use different settings than
+#                 the run did.
+#
+#   per-peptide   name, probability
+#                 AmyloGram's own output over the sliding-window FASTA. Projected
+#                 here with the same `project_windows` the runner calls, so a
+#                 `--skip-run` reparse reproduces the run rather than approximating
+#                 it. The window list is rebuilt from the sequence, which is why
+#                 `parse` needs it.
+#
+# The shape is detected from the columns rather than from the filename, since a
+# caller may rename either one.
+
+from aggressor_wrappers.core.schema import (  # noqa: E402
+    PredictorResult,
+    binary_from_scores,
+    get_predictor_spec,
+)
+from aggressor_wrappers.predictors.base import BasePredictorParser  # noqa: E402
+
+_PER_RESIDUE_SCORE = ("score", "amylogram_score")
+_PER_RESIDUE_INDEX = ("number", "position", "num", "n")
+_PER_PEPTIDE_ID = ("name", "id", "seq_name", "sequence_id")
+_PER_PEPTIDE_PROB = ("probability", "prob", "amylogram_probability")
+
+
+def _lowered(df: "pd.DataFrame") -> dict[str, str]:
+    return {str(c).strip().lower(): c for c in df.columns}
+
+
+def detect_output_shape(df: "pd.DataFrame") -> str:
+    """``"per_residue"`` or ``"per_peptide"``, from the columns alone.
+
+    Checked in this order because a per-residue table written by the runner also
+    carries a ``Score`` column, which would match the per-peptide probability
+    aliases if those were tried first.
+    """
+    cols = _lowered(df)
+    if any(c in cols for c in _PER_RESIDUE_INDEX) and any(
+        c in cols for c in _PER_RESIDUE_SCORE
+    ):
+        return "per_residue"
+    if any(c in cols for c in _PER_PEPTIDE_ID) and any(
+        c in cols for c in _PER_PEPTIDE_PROB
+    ):
+        return "per_peptide"
+    raise ValueError(
+        "AmyloGram output is neither a per-residue table (needs an index column "
+        f"from {list(_PER_RESIDUE_INDEX)} and a score column from "
+        f"{list(_PER_RESIDUE_SCORE)}) nor a per-peptide table (needs "
+        f"{list(_PER_PEPTIDE_ID)} and {list(_PER_PEPTIDE_PROB)}); "
+        f"columns are {list(df.columns)}"
+    )
+
+
+class AmyloGramParser(BasePredictorParser):
+    """Parse AmyloGram output into a per-residue :class:`PredictorResult`."""
+
+    spec = get_predictor_spec("amylogram")
+
+    def __init__(
+        self,
+        threshold: float | None = None,
+        *,
+        window: int = DEFAULT_WINDOW,
+        aggregation: str = DEFAULT_AGGREGATION,
+        support_fraction: float = DEFAULT_SUPPORT_FRACTION,
+        quantile: float = 0.5,
+        prefix: str = "w",
+    ) -> None:
+        """Projection settings are accepted so that a reparse can be made to
+        match the run that produced the file.
+
+        They are only consulted for per-peptide input; a per-residue table has
+        already been projected, and re-projecting it is not possible from the
+        residue scores anyway. Passing them alongside a per-residue file is not
+        an error, but it does nothing, and the returned metadata says which
+        path was taken so the distinction is visible downstream.
+        """
+        self.threshold = float(
+            threshold if threshold is not None else (self.spec.default_threshold or 0.5)
+        )
+        self.window = int(window)
+        self.aggregation = aggregation
+        self.support_fraction = float(support_fraction)
+        self.quantile = float(quantile)
+        self.prefix = prefix
+
+    def parse(
+        self,
+        source: str | Path,
+        *,
+        protein_id: str,
+        sequence: str,
+        **kwargs,
+    ) -> PredictorResult:
+        df = pd.read_csv(source)
+        df.columns = [str(c).strip() for c in df.columns]
+        shape = detect_output_shape(df)
+        n = len(sequence)
+
+        if shape == "per_residue":
+            cols = _lowered(df)
+            index_col = next(c for a in _PER_RESIDUE_INDEX if (c := cols.get(a)))
+            score_col = next(c for a in _PER_RESIDUE_SCORE if (c := cols.get(a)))
+            df = df.sort_values(index_col)
+            if len(df) != n:
+                raise ValueError(
+                    f"{source}: AmyloGram per-residue table has {len(df)} rows "
+                    f"for the {n}-residue sequence of {protein_id}"
+                )
+            # Residue identities are checked when the file carries them. A
+            # mis-filed export parses perfectly and attributes one chain's APRs
+            # to another; this is the only cheap way to catch it, and the same
+            # check FoldAmyloidParser makes.
+            residue_col = next(
+                (cols[a] for a in ("residue", "aa_name", "res", "aa") if a in cols),
+                None,
+            )
+            if residue_col is not None:
+                observed = "".join(
+                    str(x).strip().upper()[:1] for x in df[residue_col]
+                )
+                if observed and observed != sequence.upper():
+                    first = next(
+                        i + 1
+                        for i, (a, b) in enumerate(zip(observed, sequence.upper()))
+                        if a != b
+                    )
+                    raise ValueError(
+                        f"{source}: AmyloGram output does not match the sequence "
+                        f"given for {protein_id}; first mismatch at position "
+                        f"{first} (file says {observed[first - 1]!r}, sequence "
+                        f"has {sequence[first - 1]!r}). Probably a different protein."
+                    )
+            scores = [float(x) for x in df[score_col]]
+            source_shape = "per_residue table (already projected)"
+        else:
+            probabilities = parse_amylogram_output(source)
+            windows = sliding_windows(sequence, self.window)
+            scores = project_windows(
+                windows,
+                probabilities,
+                n,
+                aggregation=self.aggregation,
+                support_fraction=self.support_fraction,
+                quantile=self.quantile,
+                prefix=self.prefix,
+            )
+            source_shape = (
+                f"per_peptide probabilities, projected "
+                f"(window={self.window}, aggregation={self.aggregation})"
+            )
+
+        binary = binary_from_scores(scores, threshold=self.threshold)
+        return PredictorResult(
+            protein_id=protein_id,
+            sequence=sequence,
+            spec=self.spec,
+            scores=scores,
+            binary=binary,
+            metadata={
+                "threshold": self.threshold,
+                "parsed_from": source_shape,
+                "source": str(source),
+            },
+            aux=(
+                {"coverage_depth": coverage_depth(n, self.window)}
+                if shape == "per_peptide"
+                else {}
+            ),
+        )

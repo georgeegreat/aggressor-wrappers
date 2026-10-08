@@ -14,15 +14,36 @@ from aggressor_wrappers.predictors.base import BasePredictorParser
 class APPNNParser(BasePredictorParser):
     spec = get_predictor_spec("appnn")
 
+    def __init__(self, score_threshold: float = 0.5) -> None:
+        """``score_threshold`` is accepted here as well as on :meth:`parse`.
+
+        It has to be. ``score_threshold`` is a ``[predictors.appnn]`` key, and
+        ``registry.get_parser`` constructs every parser as
+        ``PARSER_REGISTRY[key](**options)`` with the options read from that
+        section -- so a class declaring no ``__init__`` raised
+        ``TypeError: APPNNParser() takes no arguments`` for anyone who went
+        through ``get_parser``. The run path was unaffected (``runners/appnn.py``
+        builds ``APPNNParser()`` and passes the threshold to ``parse``), but
+        ``pipeline``'s reparse / ``--skip-run`` branch goes through
+        ``get_parser``, so reparsing cached APPNN output could not work at all.
+
+        A value passed to :meth:`parse` still wins, so the existing call site
+        keeps its behaviour; the constructor supplies the default.
+        """
+        self.score_threshold = float(score_threshold)
+
     def parse(
         self,
         source: str | Path,
         *,
         protein_id: str,
         sequence: str,
-        score_threshold: float = 0.5,
+        score_threshold: float | None = None,
         **kwargs,
     ) -> PredictorResult:
+        score_threshold = (
+            self.score_threshold if score_threshold is None else float(score_threshold)
+        )
         df = pd.read_csv(source)
 
         position_col = _pick_column(df, ("aminoacid_position", "position"))

@@ -1287,8 +1287,23 @@ def _merge_protein(
     sequence = read_fasta(single_fasta)[protein_id]
 
     results = []
+    unmergeable: list[str] = []
     for predictor_key in requested_predictors:
         if predictor_key not in list_parsers():
+            # A configured predictor that cannot be merged is REPORTED, never
+            # dropped in silence. AmyloGram had a runner and a projection module
+            # but no registry entry, so it ran on every protein, wrote correct
+            # parsed tables, and was skipped here without a line in the log: the
+            # consensus denominator fell from 10 to 9 and nothing said so. A
+            # predictor that fails loudly costs an afternoon; one that
+            # disappears costs the denominator of every fractional tier
+            # downstream, in a run nobody re-reads.
+            unmergeable.append(predictor_key)
+            emit(
+                f"[merge] {protein_id}: WARNING -- {predictor_key!r} was "
+                f"requested but has no registered parser, so it cannot enter "
+                f"the merged table. Registered: {', '.join(list_parsers())}"
+            )
             continue
         spec = get_predictor_spec(predictor_key)
         tag = _predictor_tag(predictor_key)
@@ -1309,6 +1324,17 @@ def _merge_protein(
 
     if not results:
         raise RuntimeError(f"[merge] {protein_id}: no parsed CSV files to merge")
+
+    if unmergeable:
+        # Stated once more at the point the denominator is actually fixed, with
+        # the two numbers side by side. Anything that reads a fractional tier
+        # from this table is reading n/len(results), and that is the number a
+        # Methods section has to quote.
+        emit(
+            f"[merge] {protein_id}: consensus denominator is {len(results)}, "
+            f"not {len(requested_predictors)} -- "
+            f"{', '.join(unmergeable)} could not be merged"
+        )
 
     emit(f"[merge] {protein_id}: building wide table ({len(results)} predictor(s)) …")
     wide = merge_predictor_tables(results)

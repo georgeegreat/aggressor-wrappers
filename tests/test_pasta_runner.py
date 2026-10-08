@@ -46,11 +46,33 @@ def test_pasta_runner_extract_profiles(tmp_path: Path) -> None:
 
 
 def test_get_runner_pasta_from_config() -> None:
+    """`amount` and `energy_threshold` are different quantities and differ.
+
+    `amount` is the web form's submission parameter, deciding which pairings the
+    PASTA server reports at all; `energy_threshold` is the per-residue APR cutoff
+    applied to the returned profile. They used to share a value because the
+    second defaulted to the first, so retuning the server's reporting breadth
+    silently retuned what counted as an APR. The cutoff is now the published
+    -5.0 (Walsh et al. 2014) while the submission parameter is unchanged.
+    """
     runner = get_runner("pasta")
     assert isinstance(runner, PASTARunner)
     assert runner.npair == 22
     assert runner.amount == pytest.approx(-2.8)
-    assert runner.energy_threshold == pytest.approx(-2.8)
+    assert runner.energy_threshold == pytest.approx(-5.0)
+
+
+def test_pasta_energy_threshold_does_not_fall_back_to_amount() -> None:
+    """With no explicit cutoff, the runner takes the predictor's default.
+
+    The regression this pins: `energy_threshold=None` used to resolve to
+    `amount`. At the shipped amount of -2.8 that called 87 % of all residues,
+    which is how PASTA came to appear in 100 % of the consensus regions of a
+    372-protein sweep -- a constant rather than a voter.
+    """
+    runner = PASTARunner(amount=-2.8, energy_threshold=None)
+    assert runner.amount == pytest.approx(-2.8)
+    assert runner.energy_threshold == pytest.approx(-5.0)
 
 
 def test_batch_pipeline_skip_run_pasta(tmp_path: Path) -> None:

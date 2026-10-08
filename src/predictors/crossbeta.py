@@ -29,13 +29,18 @@ class CrossBetaParser(BasePredictorParser):
 
         sequence_data = _extract_aa_list(data)
         if not sequence_data:
-            return PredictorResult(
-                protein_id=protein_id,
-                sequence=sequence,
-                spec=self.spec,
-                scores=[0.0] * len(sequence),
-                binary=[0] * len(sequence),
-                metadata={"confidence_threshold": self.confidence_threshold},
+            # An empty payload is a FAILED call, not a negative result. Returning
+            # an all-zero track made "the service returned nothing" and
+            # "Cross-Beta called no APRs" indistinguishable downstream, and in a
+            # fractional consensus an invented negative voter is worse than a
+            # missing one: it lowers the agreement fraction of every region in
+            # the protein by a vote that was never cast. Every other branch of
+            # `_extract_aa_list` raises; this one now does too.
+            raise ValueError(
+                f"{source}: Cross-Beta returned no per-residue data for "
+                f"{protein_id}. The job probably failed or is incomplete -- "
+                f"re-run it rather than scoring the protein with a predictor "
+                f"that did not answer."
             )
 
         if len(sequence_data) != len(sequence):
