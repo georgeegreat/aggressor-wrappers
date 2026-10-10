@@ -99,3 +99,37 @@ def test_unknown_method_raises_with_available_list():
         compute_metascore(_wide(), config=load_config(), method="nope")
 
 
+
+
+def test_choosing_another_method_does_not_break_weighted_sum():
+    """compute_weighted_metascore re-read cfg.metascore.method and refused
+    anything but 'weighted_sum'. Since the registry calls it only when
+    weighted_sum was asked for, that check could only ever fire wrongly: setting
+    method = fractional_consensus made the deprecated combiner raise
+    NotImplementedError from inside the branch that had not been chosen."""
+    import pandas as pd
+
+    from aggressor_wrappers.core.config import load_config
+    from aggressor_wrappers.core.metascore import compute_weighted_metascore
+
+    cfg = load_config("config.cfg")
+    assert cfg.metascore.method == "fractional_consensus", "shipped default"
+
+    df = pd.DataFrame({"aggrescan_score": [0.1, 0.9], "APPNN_score": [0.2, 0.8]})
+    series = compute_weighted_metascore(
+        df, config=cfg, weights={"aggrescan": 0.5, "appnn": 0.5}
+    )
+    assert len(series) == 2
+    assert series.iloc[1] > series.iloc[0]
+
+
+def test_an_unknown_method_is_still_rejected_by_name():
+    """Removing the check inside the implementation must not remove it from
+    dispatch, which is where a config typo should surface."""
+    import pandas as pd
+    import pytest
+
+    from aggressor_wrappers.core.metascore_plugins import compute_metascore
+
+    with pytest.raises(NotImplementedError, match="nonsuch"):
+        compute_metascore(pd.DataFrame({"aggrescan_score": [0.1]}), method="nonsuch")

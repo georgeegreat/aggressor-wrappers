@@ -28,8 +28,15 @@ def compute_weighted_metascore(
     if not active_weights:
         raise ValueError("No metascore weights configured")
 
-    if cfg.metascore.method != "weighted_sum":
-        raise NotImplementedError(f"Metascore method not implemented: {cfg.metascore.method}")
+    # This function IS the weighted sum; being called is the decision that it
+    # should run. It previously re-read cfg.metascore.method and refused
+    # anything but "weighted_sum" -- a check from when that was the only method,
+    # which the plugin registry in metascore_plugins.py has since superseded.
+    # Left in place, it made the config's own choice of combiner break the
+    # combiner it was choosing away from: setting method = fractional_consensus
+    # raised NotImplementedError inside weighted_sum, which the registry calls
+    # only when weighted_sum was asked for. Dispatch belongs to
+    # compute_metascore(), which still rejects an unknown method by name.
 
     total = pd.Series(0.0, index=wide_df.index)
     used = 0.0

@@ -24,6 +24,7 @@ the other, while a genuine typo is still reported instead of silently ignored.
 from __future__ import annotations
 
 import inspect
+import shutil
 import warnings
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,31 @@ _RUNNER_BATCH_KEYS = frozenset({"parallel_jobs", "sequences_per_run"})
 _BACKEND_KEYS = frozenset({"backend"})
 
 
+def _amylodeep_local_tool(options: dict[str, Any]) -> LocalTool | None:
+    """Locate the thing AmyloDeep will actually be launched as.
+
+    ``_executable_tool("executable", "amylodeep")`` looked for the console script,
+    which is not what runs while use_compat_shim is on: the shim is launched with
+    ``python`` (or whichever python3 comes first on PATH). So a console script
+    visible on PATH satisfied the backend policy while the shim ran under an
+    interpreter that could not import the package, and the failure arrived at run
+    time as a ModuleNotFoundError from inside a generated file.
+
+    The interpreter is reported as the tool when the shim is in use, so the
+    backend decision and the runner's own availability check ask the same
+    question.
+    """
+    shim = options.get("use_compat_shim", True)
+    if isinstance(shim, str):
+        shim = shim.strip().lower() not in ("false", "0", "no", "off", "")
+    if not shim:
+        return LocalTool(
+            kind="executable", executable=str(options.get("executable", "amylodeep"))
+        )
+    interpreter = options.get("python") or shutil.which("python3") or "python3"
+    return LocalTool(kind="executable", executable=str(interpreter))
+
+
 def _crossbeta_local_tool(options: dict[str, Any]) -> LocalTool | None:
     """Locate a cross-beta-predictor checkout.
 
@@ -154,7 +180,7 @@ _BACKENDS: dict[str, tuple[type | None, type | None, Any]] = {
     # exists for either (AmyloGram's public interface is a Shiny app), so
     # has_web is False and backend=web is rejected rather than silently ignored.
     "amylogram": (None, AmyloGramRunner, _executable_tool("rscript", "Rscript")),
-    "amylodeep": (None, AmyloDeepRunner, _executable_tool("executable", "amylodeep")),
+    "amylodeep": (None, AmyloDeepRunner, _amylodeep_local_tool),
 }
 
 

@@ -81,11 +81,17 @@ class AmyloGramRunner(BasePredictorRunner):
         threshold: float = 0.5,
         timeout_seconds: int = 1800,
         write_per_residue: bool = True,
+        keep_intermediates: bool = False,
         **_ignored,
     ) -> None:
         self.rscript = rscript
         self.script_path = Path(script_path).expanduser() if script_path else None
         self.write_per_residue = bool(write_per_residue)
+        # Peptide FASTAs and the generated R script are scratch, not results. They
+        # were never removed, so a run left one directory per protein behind and a
+        # sweep's disk use grew with it. True keeps them for one run when a
+        # projection has to be checked by hand.
+        self.keep_intermediates = bool(keep_intermediates)
         self.last_per_residue_path: Path | None = None
 
         # `window` (singular) is kept so existing configs and callers keep
@@ -192,6 +198,68 @@ class AmyloGramRunner(BasePredictorRunner):
             raise RuntimeError(f"AmyloGram produced no output.\n{combined[:400]}")
         return out_csv
 
+    # ------------------------------------------------------------------ #
+    # Batch protocol. The scheduler's generic path calls execute_batch() and
+    # discover_outputs() on every runner, and this class implemented neither --
+    # so AmyloGram passed its availability check, was scheduled, and died with
+    # `'AmyloGramRunner' object has no attribute 'execute_batch'` after the panel
+    # was already running. The runner's own per-protein logic was never the
+    # problem; the protocol the scheduler expects was simply absent, and nothing
+    # declared it, since BasePredictorRunner marks only run() abstract.
+    #
+    # AmyloGram scores hexapeptides one protein at a time and R startup dominates
+    # per call, so a batch is a loop rather than a single invocation. The loop
+    # lives here rather than in the scheduler because the per-protein work
+    # (peptide FASTA, widths, projection) is this runner's business.
+
+    def execute_batch(self, fasta_path: Path, work_dir: str | Path) -> Path:
+        """Score every record and leave one raw CSV per protein in a directory."""
+        self.require_available()
+        work = Path(work_dir)
+        out_dir = work / "amylogram_out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        for protein_id in read_fasta(Path(fasta_path)):
+            # One work directory per protein: the intermediate peptide FASTAs and
+            # the R output are named after the peptide file's stem, so two
+            # proteins sharing a directory would overwrite each other's windows.
+            protein_work = out_dir / protein_id
+            protein_work.mkdir(parents=True, exist_ok=True)
+            try:
+                self.run(
+                    fasta=fasta_path,
+                    protein_id=protein_id,
+                    work_dir=protein_work,
+                )
+                # Publish under a name discover_outputs can find without knowing
+                # the widths that produced it.
+                if self.last_raw_path and self.last_raw_path.is_file():
+                    published = out_dir / f"{protein_id}.csv"
+                    published.write_text(
+                        self.last_raw_path.read_text(encoding="utf-8"),
+                        encoding="utf-8",
+                    )
+            finally:
+                # The published CSV is the deliverable; the peptide FASTAs and the
+                # generated R script are scratch. Removing them here rather than at
+                # the end means a sweep's disk use does not grow with the number of
+                # proteins already done. keep_intermediates = true preserves them
+                # for one run when a projection needs checking by hand.
+                if not self.keep_intermediates:
+                    shutil.rmtree(protein_work, ignore_errors=True)
+        return out_dir
+
+    def discover_outputs(
+        self, output_dir: Path, protein_ids: list[str]
+    ) -> dict[str, Path]:
+        found: dict[str, Path] = {}
+        root = Path(output_dir)
+        for protein_id in protein_ids:
+            candidate = root / f"{protein_id}.csv"
+            if candidate.is_file():
+                found[protein_id] = candidate
+        return found
+
     def run(
         self,
         *,
@@ -206,9 +274,32 @@ class AmyloGramRunner(BasePredictorRunner):
         pid = protein_id or next(iter(records))
         sequence = records[pid]
 
-        work = Path(work_dir) if work_dir else Path(tempfile.mkdtemp())
+        # A caller-supplied work_dir belongs to the caller and is left alone. A
+        # temporary one is this call's own and is removed when it finishes: the
+        # previous mkdtemp() had no owner and no remover, so every invocation left
+        # a directory of peptide FASTAs and R output behind -- one per protein per
+        # run, which on a 372-protein sweep is 372 directories nobody asked for.
+        own_temp = work_dir is None
+        work = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="amylogram_"))
         work.mkdir(parents=True, exist_ok=True)
 
+        try:
+            return self._run_in(
+                work, pid, sequence, raw_csv=raw_csv, own_temp=own_temp
+            )
+        finally:
+            if own_temp and not self.keep_intermediates:
+                shutil.rmtree(work, ignore_errors=True)
+
+    def _run_in(
+        self,
+        work: Path,
+        pid: str,
+        sequence: str,
+        *,
+        raw_csv=None,
+        own_temp: bool = False,
+    ) -> PredictorResult:
         per_width: dict[int, list[float]] = {}
         sources: dict[int, str] = {}
         n_windows: dict[int, int] = {}

@@ -107,12 +107,33 @@ def test_amylodeep_is_available_to_the_panel_but_does_not_vote_by_default():
     silently moving every tier of a fractional consensus, and it is the pair of
     facts most at risk of drifting into each other.
     """
-    from aggressor_wrappers.core.config import default_pipeline_predictors
     from aggressor_wrappers.predictors.registry import get_parser, list_parsers
 
     assert "amylodeep" in list_parsers()
     assert type(get_parser("amylodeep")).__name__ == "AmyloDeepParser"
-    assert "amylodeep" not in default_pipeline_predictors()
+
+    # The separation is that REGISTRATION does not confer a vote -- a property of
+    # the code, which a config cannot change. Asserting amylodeep's absence from
+    # the shipped roster tested the opposite: it made a legitimate decision to
+    # include it (an orthologue sweep needs a local panel) look like a regression.
+    from aggressor_wrappers.core.config import default_pipeline_predictors
+    from aggressor_wrappers.runners.registry import list_runners
+
+    # Every voter must be REACHABLE, by one of two routes: a registered parser, or
+    # a runner that writes the standard per-residue CSV itself and so never needs
+    # one (AmyloGram does exactly that, which is why "every voter has a parser" is
+    # the wrong invariant and failed on a correct configuration).
+    panel = default_pipeline_predictors()
+    reachable = set(list_parsers()) | set(list_runners())
+    unreachable = [key for key in panel if key not in reachable]
+    assert not unreachable, (
+        f"panel member(s) {unreachable} have neither a parser nor a runner, so the "
+        f"run fails after the predictors have already executed"
+    )
+    # And the separation itself: more tools are registered than vote.
+    assert len(reachable) > len(panel), (
+        "if every registered tool voted, the opt-in distinction would not exist"
+    )
 
 
 def test_parser_projects_and_binarises_a_window_table(tmp_path):
@@ -349,3 +370,243 @@ def test_blank_config_values_omit_the_flags_rather_than_failing():
     assert "--resolution" not in argv
     assert "--aggregate" not in argv
     assert "--window-size" not in argv
+
+
+def test_model_dir_and_offline_flag_reach_the_command_line(tmp_path):
+    """Which copy of the 3 GB of weights a run used is part of its provenance."""
+    runner = AmyloDeepRunner(
+        use_compat_shim=False, model_dir=tmp_path / "models", allow_download=False
+    )
+    argv = runner._argv(SEQUENCE, tmp_path / "o.csv")
+    assert argv[argv.index("--model-dir") + 1] == str(tmp_path / "models")
+    assert "--no-download" in argv
+
+
+def test_a_model_dir_that_does_not_exist_yet_is_accepted():
+    """The tool downloads INTO that directory, so refusing an absent path would
+    break first use -- the failure belongs to the tool, which names what is
+    missing, not to the runner's constructor."""
+    runner = AmyloDeepRunner(use_compat_shim=False, model_dir="/nonexistent/models")
+    assert runner.model_dir == Path("/nonexistent/models")
+
+
+def test_a_tilde_in_the_model_dir_is_expanded(tmp_path):
+    """A config file is text: ~ arrives literally and would create a directory
+    called '~' beside the working directory rather than resolving to $HOME."""
+    runner = AmyloDeepRunner(use_compat_shim=False, model_dir="~/amylodeep_models")
+    assert "~" not in str(runner.model_dir)
+    assert runner.model_dir.is_absolute()
+
+
+def test_download_is_allowed_by_default():
+    assert AmyloDeepRunner(use_compat_shim=False).allow_download is True
+    assert "--no-download" not in AmyloDeepRunner(use_compat_shim=False)._argv(
+        SEQUENCE, Path("/tmp/o.csv")
+    )
+
+
+def test_an_absolute_executable_path_satisfies_the_availability_check(tmp_path):
+    """A conda env is reached by pointing `executable` into its bin/ without
+    activating it, which only works if availability accepts an absolute path."""
+    fake = tmp_path / "bin" / "amylodeep"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    assert AmyloDeepRunner(executable=str(fake), use_compat_shim=False).is_available()
+    assert not AmyloDeepRunner(
+        executable=str(tmp_path / "bin" / "absent"), use_compat_shim=False
+    ).is_available()
+
+
+def test_the_shipped_config_pins_the_model_directory():
+    from aggressor_wrappers.core.config import load_config
+    from aggressor_wrappers.runners.registry import _construct
+
+    options = dict(load_config("config.cfg").runners.get("amylodeep", {}))
+    runner = _construct(AmyloDeepRunner, options, key="amylodeep")
+    assert runner.model_dir is not None, "model_dir must be pinned, not inherited"
+    assert runner.model_dir.is_absolute()
+
+
+# --- The compat shim's availability check asked the wrong question -----------
+#
+# With use_compat_shim on (the default), _argv builds [python, bootstrap, ...] and
+# the console script is never called. is_available() checked the console script,
+# so an amylodeep installed in its own conda env satisfied the gate while the shim
+# ran under whichever python3 came first -- typically the system one, which cannot
+# import the package. The run then died with a bare ModuleNotFoundError from inside
+# a generated file, after the panel was already running.
+
+
+def _interpreter(tmp_path, *, importable: bool):
+    """A fake python whose `-c "import amylodeep"` succeeds or fails."""
+    fake = tmp_path / "bin" / "python"
+    fake.parent.mkdir(parents=True, exist_ok=True)
+    fake.write_text("#!/bin/sh\nexit %d\n" % (0 if importable else 1))
+    fake.chmod(0o755)
+    return fake
+
+
+def test_availability_checks_the_interpreter_when_the_shim_is_used(tmp_path):
+    good = _interpreter(tmp_path / "good", importable=True)
+    bad = _interpreter(tmp_path / "bad", importable=False)
+    assert AmyloDeepRunner(python=str(good), use_compat_shim=True).is_available()
+    assert not AmyloDeepRunner(python=str(bad), use_compat_shim=True).is_available()
+
+
+def test_availability_checks_the_executable_when_the_shim_is_off(tmp_path):
+    """Without the shim the console script IS what runs, so check that instead."""
+    script = tmp_path / "bin" / "amylodeep"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    runner = AmyloDeepRunner(executable=str(script), use_compat_shim=False)
+    assert runner.is_available()
+
+
+def test_the_refusal_names_the_interpreter_and_the_config_key(tmp_path):
+    """An interpreter that cannot import it must point at `python`, not
+    `executable` -- setting the latter has no effect while the shim is on."""
+    bad = _interpreter(tmp_path, importable=False)
+    runner = AmyloDeepRunner(python=str(bad), use_compat_shim=True)
+    with pytest.raises(FileNotFoundError) as excinfo:
+        runner.require_available()
+    message = str(excinfo.value)
+    assert str(bad) in message
+    assert "python =" in message
+    assert "has no effect" in message
+
+
+def test_a_module_not_found_at_runtime_is_explained(monkeypatch, tmp_path):
+    """Belt and braces: if the interpreter changes between the check and the run,
+    the symptom still has to name the cause rather than quote a traceback."""
+    failed = subprocess.CompletedProcess(
+        args=["python", "_run_amylodeep.py"],
+        returncode=1,
+        stdout="",
+        stderr=(
+            "Traceback (most recent call last):\n"
+            '  File "_run_amylodeep.py", line 39, in <module>\n'
+            "    from amylodeep.cli import main\n"
+            "ModuleNotFoundError: No module named 'amylodeep'"
+        ),
+    )
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: failed)
+    runner = AmyloDeepRunner(use_compat_shim=True)
+    with pytest.raises(RuntimeError) as excinfo:
+        runner._run_one(SEQUENCE, tmp_path / "out.csv")
+    message = str(excinfo.value)
+    assert "cannot import amylodeep" in message
+    assert "[runners.amylodeep]" in message
+
+
+def test_the_backend_locator_agrees_with_the_runner(tmp_path):
+    """The backend policy decided availability from `executable` too, which is how
+    a run got past the gate in the first place. Both must ask one question."""
+    from aggressor_wrappers.runners.registry import _amylodeep_local_tool
+
+    with_shim = _amylodeep_local_tool({"python": "/envs/amylodeep/bin/python"})
+    assert with_shim.executable == "/envs/amylodeep/bin/python"
+
+    without = _amylodeep_local_tool(
+        {"use_compat_shim": False, "executable": "/envs/amylodeep/bin/amylodeep"}
+    )
+    assert without.executable == "/envs/amylodeep/bin/amylodeep"
+
+
+def test_a_blank_use_compat_shim_string_from_ini_is_read_as_false():
+    """configparser hands through strings; 'false' must not be truthy."""
+    from aggressor_wrappers.runners.registry import _amylodeep_local_tool
+
+    tool = _amylodeep_local_tool({"use_compat_shim": "false", "executable": "ad"})
+    assert tool.executable == "ad"
+
+
+# --- A broken jax must not stop the tool before it starts -------------------
+#
+# The compat shim applies a WORKAROUND for a jax_unirep bug, so failing to apply it
+# cannot be fatal. The first version caught only ImportError, and jax's own jaxlib
+# version check raises RuntimeError -- so a mismatched jax/jaxlib pair killed the
+# bootstrap before AmyloDeep ran, and a problem confined to ONE of five heads
+# presented as a total failure.
+
+JAXLIB_MISMATCH = (
+    "RuntimeError: jaxlib is version 0.10.2, but this version of jax requires "
+    "version >= 0.11.2."
+)
+
+
+def test_a_jax_jaxlib_mismatch_is_named_with_the_paired_install(monkeypatch, tmp_path):
+    failed = subprocess.CompletedProcess(
+        args=["python", "_run_amylodeep.py"],
+        returncode=1,
+        stdout="",
+        stderr=JAXLIB_MISMATCH,
+    )
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: failed)
+    runner = AmyloDeepRunner(use_compat_shim=True)
+    with pytest.raises(RuntimeError) as excinfo:
+        runner._run_one(SEQUENCE, tmp_path / "out.csv")
+    message = str(excinfo.value)
+    assert "mismatched" in message
+    assert "jax[cpu]" in message, "install them as a PAIR, not separately"
+    assert "jax_unirep" in message, "the consumer may break on a newer pair"
+    assert "four heads" in message, "only one head needs jax"
+
+
+def test_the_bootstrap_survives_a_jax_that_raises_more_than_importerror():
+    """Run the generated bootstrap's _patch() with a jax that raises RuntimeError
+    on import, exactly as a mismatched jaxlib does."""
+    import re
+    import sys
+    import types
+
+    from aggressor_wrappers.core.compat import BOOTSTRAP_SOURCE
+
+    namespace: dict = {"__name__": "not_main", "sys": sys}
+    exec(compile(BOOTSTRAP_SOURCE, "_run_amylodeep.py", "exec"), namespace)
+
+    class Exploding(types.ModuleType):
+        def __getattr__(self, name):
+            raise RuntimeError(
+                "jaxlib is version 0.10.2, but this version of jax requires "
+                "version >= 0.11.2."
+            )
+
+    saved = {k: v for k, v in sys.modules.items() if k.startswith("jax")}
+    for key in list(sys.modules):
+        if key.startswith("jax"):
+            del sys.modules[key]
+    sys.modules["jax"] = Exploding("jax")
+    sys.modules["jax.numpy"] = Exploding("jax.numpy")
+    try:
+        namespace["_patch"]()          # must return, not raise
+    finally:
+        for key in list(sys.modules):
+            if key.startswith("jax"):
+                del sys.modules[key]
+        sys.modules.update(saved)
+
+    assert "_patch" in namespace
+
+
+def test_the_bootstrap_still_returns_when_jax_is_simply_absent():
+    import sys
+
+    from aggressor_wrappers.core.compat import BOOTSTRAP_SOURCE
+
+    namespace: dict = {"__name__": "not_main", "sys": sys}
+    exec(compile(BOOTSTRAP_SOURCE, "_run_amylodeep.py", "exec"), namespace)
+
+    saved = {k: v for k, v in sys.modules.items() if k.startswith("jax")}
+    for key in list(sys.modules):
+        if key.startswith("jax"):
+            del sys.modules[key]
+    sys.modules["jax"] = None          # import raises ImportError
+    try:
+        namespace["_patch"]()
+    finally:
+        for key in list(sys.modules):
+            if key.startswith("jax"):
+                del sys.modules[key]
+        sys.modules.update(saved)

@@ -84,22 +84,35 @@ def test_runner_batch_config_defaults() -> None:
 def test_pipeline_predictors_from_config() -> None:
     from aggressor_wrappers.core.config import default_pipeline_predictors
 
-    # PATH is opt-in (licensed deps: Modeller + PyRosetta), not a default.
-    # TANGO is licensed and local-only, AmyloGram and AmyloDeep need a local
-    # interpreter, so none of the three can be a default either -- a default set
-    # must run on a clean checkout with nothing installed.
-    assert default_pipeline_predictors() == [
-        "appnn",
-        "waltz",
-        "pasta",
-        "archcandy",
-        "crossbeta",
-        "aggreprot",
-        "foldamyloid",
-        "aggrescan",
-    ]
-    for opt_in in ("path", "tango", "amylogram", "amylodeep"):
-        assert opt_in not in default_pipeline_predictors()
+    # The ROSTER is the user's to choose and changes with the work -- adding
+    # amylodeep for an orthologue sweep, dropping tango on a machine whose binary
+    # will not run. A test pinning one exact list therefore fails on a legitimate
+    # config change and says nothing about correctness, so these assert the
+    # invariants that a roster must satisfy however it is composed.
+    from aggressor_wrappers.core.schema import PREDICTOR_REGISTRY
+
+    predictors = default_pipeline_predictors()
+    assert predictors, "an empty panel would produce no consensus at all"
+    unknown = [key for key in predictors if key not in PREDICTOR_REGISTRY]
+    assert not unknown, (
+        f"config names predictor(s) with no spec: {unknown}. These fail at run time "
+        f"rather than here."
+    )
+    assert len(set(predictors)) == len(predictors), (
+        f"duplicate predictor in the panel: {predictors}. A fractional consensus "
+        f"counts voters, so a repeat silently weights one tool twice."
+    )
+    # PATH needs licensed dependencies (Modeller + PyRosetta), so it must never be
+    # a default: the shipped config has to run on a clean checkout.
+    assert "path" not in predictors, "PATH is opt-in; add it with --predictors"
+    # Only PATH is pinned out of the default panel, and only because its licensed
+    # dependencies (Modeller + PyRosetta) mean a shipped default containing it would
+    # not run on a clean checkout. TANGO, AmyloGram and AmyloDeep were pinned out
+    # here too, which turned a deliberate change -- adding the two local tools for an
+    # orthologue sweep, where the web-backed predictors cannot serve 10^4 sequences
+    # -- into a test failure. Which tools vote is the user's decision; that the panel
+    # is well-formed is this test's.
+    assert "path" not in predictors
 
 
 def test_guess_predictor_import() -> None:

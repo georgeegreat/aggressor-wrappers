@@ -1,348 +1,406 @@
-feat(runners)!: make the web predictor panel run end to end
+feat(runners): a local panel that survives a 372-protein sweep
 
-Before this, one predictor in the web panel actually reached its service end to
-end. The others failed in ways that pointed away from their causes: a config
-value parsed as a string and died in a constructor, a parse step complained
-about a flag the operator never set, a CGI answered 200 with an error where its
-table should be. Each is fixed at the layer that produced it, and each failure
-mode is pinned by a test against a verbatim capture rather than a hand-written
-approximation of one.
+The web-backed panel reaches its services; this is what it took to run a real
+orthologue sweep through the two LOCAL tools and out the other side into
+amyloscope. Every defect below was found by running it, and every one reached
+RUN time -- in most cases hours in -- because nothing earlier asked the question.
 
-The change is validated on Abeta(1-42) per tool, and where a real page was
-available, against the live service.
+The sweep: 372 FMR1/FXR1/FXR2 orthologues, 227,106 residues.
 
-runners/aggrescan.py, predictors/aggrescan.py  (new)
+runners/amylodeep.py, predictors/amylodeep.py, runners/registry.py -- the
+availability check and the weights directory
 
-  Submission. The CGI splits FASTA records on CRLF, because the HTML
-  specification requires a <textarea> to normalise its value to CRLF on submit,
-  so every request the authors ever saw had it. A client sending bare LF hands
-  the script one unsplittable line and gets "UNIDENTIFIED ERROR", whose text
-  blames a copy-paste from MS Word -- a red herring for a programmatic caller,
-  and the reason this runner had never once returned a table. Measured, same
-  bytes otherwise: LF -> 860-byte error page, CRLF -> 15 643-byte result table.
+  The availability check asked the wrong question entirely. With use_compat_shim
+  on (the default) _argv builds [python, bootstrap, ...] and the console script is
+  never invoked -- yet is_available() checked that script, and so did the backend
+  locator. An amylodeep installed in its own conda env therefore satisfied both
+  gates while the shim ran under whichever python3 came first, typically the
+  system one, which cannot import the package; the run died with a bare
+  `ModuleNotFoundError: No module named 'amylodeep'` from inside a generated file,
+  after the panel was already running. Both now check the interpreter the shim
+  will actually use, the refusal names it and says that `python` rather than
+  `executable` is the key that matters, and the runtime symptom is interpreted too
+  in case the interpreter changes between the check and the run.
 
-  The CGI path is absolute (/bioinf/cgi-bin/aap/aap_ov.pl) rather than joined
-  relatively to base_url. It lives one level ABOVE the tool page, so a relative
-  join resolves only when base_url happens to be the /bioinf/ root and silently
-  404s for the URL anyone would put in a key called base_url. The 404 body has
-  no data blocks, which the parser then reported as a layout change.
+  registry.py carries the second half: _amylodeep_local_tool() reports the
+  INTERPRETER as the tool while the shim is in use, so the backend policy and the
+  runner's own availability check ask the same question instead of two different
+  ones that can both pass. With the shim off it reports the console script, which
+  is then what actually runs.
 
-  Table extraction is anchored on the header row whose cells read
-  "# AA a4v HSA NHSA a4vAHS"; the profile is the single <tr> after it, six <td>
-  cells, values separated by <br>. Anchoring on markup is not viable: a real
-  334-residue page opens 42 <small> tags and closes 29, and contains a literal
-  <smal> typo, so any <small>-delimited scan reads across cell boundaries
-  depending on where the imbalance falls. The header row is the one landmark the
-  page states explicitly.
+  --model-dir is passed for the same reason and was not passed at all before.
+  Unset, AmyloDeep falls back to $AMYLODEEP_MODEL_DIR and then
+  ~/.amylodeep_models, so which copy of ~3 GB of weights a batch used depended on
+  the environment the subprocess inherited -- and in a tool launched from its own
+  conda env, that is not the shell the user configured. model_dir is now pinned in
+  config.cfg and expanded (~ arrives literally from an ini file and would create a
+  directory called '~'). An absent directory is accepted rather than rejected,
+  because the tool downloads into it and refusing would break first use;
+  allow_download=false turns a missing artefact into a failure that names it
+  instead of a multi-gigabyte download in the middle of a sweep.
 
-  Hot Spots come from NHSA > 0, not from re-deriving the published rule.
-  Reimplementing "above the Hot Spot Threshold over a minimum run" does not
-  reproduce the tool's own calls; NHSA does, exactly:
+runners/amylodeep.py -- one model load per batch, not one per protein
 
-      capture            reported nHS   NHSA > 0   a4v > -0.02, run >= 5
-      Abeta(1-42)        2              2          2  (identical)
-      CTSV (334 aa)      11             11         12
+  execute_batch looped over the records and launched a subprocess per protein.
+  AmyloDeep loads about 3.2 GB of artefacts at startup -- the 2.6 GB frozen
+  encoder, ESM2-150M, three heads, three calibrators -- so a 372-protein sweep
+  paid that 372 times and read on the order of a terabyte from disk to do work
+  that needs one load. The CLI already accepts a multifasta and loops internally
+  with the models resident, which is what the batch path now uses.
 
-  On CTSV the threshold rule invents a Hot Spot at 105-111 and extends three
-  more by 3-4 residues (230-232, 245-248, 332-334): 101 hot residues against the
-  server's 84, i.e. 30.2 % breadth reported where the tool itself calls 25.1 %.
-  The error never under-calls, so it inflated AGGRESCAN's apparent breadth and
-  manufactured exactly the shoulders that consensus clustering is asked to
-  adjudicate. NHSA also matches the page's own red highlighting 84/84, which the
-  parser now cross-checks -- redundant by construction, which is what makes a
-  disagreement informative. HSA is NOT interchangeable: Abeta42's isolated Y10
-  carries HSA 0.122 and a4vAHS 0.102 while NHSA is 0, because the shared area is
-  assigned before the run-length requirement is applied.
+  Granularity stays the caller's: [runners.amylodeep] sequences_per_run decides
+  how many records reach one execute_batch call, so a crash costs one chunk rather
+  than a whole sweep.
 
-  The summary is two columns -- every label in one, every value in the other --
-  so "the first number after Number of Hot Spots (nHS)" returns 100, picked off
-  the next label, "Normalized nHS for 100 residues". The nHS cross-check was
-  therefore comparing against a constant. Labels and values are now collected
-  separately and paired by order, and nothing is returned when the two runs
-  differ in length: an unavailable check beats a wrong one.
+  The call is RESUME-AWARE, which matters on a run already days old: only records
+  with no <protein_id>.csv are written into the subset handed to the tool, and a
+  batch with nothing outstanding launches nothing at all. The combined output is
+  split back per protein on sequence_id, so discover_outputs, the parser and the
+  pipeline's resume logic keep exactly the contract they had -- and output with no
+  sequence_id column is refused rather than split wrongly, since assigning every
+  row to one protein is worse than failing.
 
-  Three refusals, all HTTP 200 inside the normal result template, are classified
-  and raised as PermanentToolError so the scheduler skips instead of retrying:
-  bare LF or an empty record ("UNIDENTIFIED ERROR"); no '>' header ("Please use
-  fasta format"); a character outside the 20 standard amino acids ("E R R O R!
-  som characters ... not allowed", which red-flags the offenders, so the message
-  names them). Verified NOT to be problems, with CRLF: lower case, lengths from
-  3 to 2000 residues, 60-column wrapping, and dotted headers such as
-  >6087.XP_002162002.2. Replies arrived in 0.26-1.6 s, so no timeout is involved.
+core subprocess isolation: runners/amylodeep.py
 
-runners/foldamyloid.py, predictors/foldamyloid.py  (new)
+  AmyloDeep died on SIGSEGV after its weights had loaded, with aggressor-wrappers
+  and amylodeep installed in DIFFERENT conda environments -- and the runner called
+  subprocess.run with no env= at all. So the child's interpreter was amylodeep's
+  while PYTHONPATH still pointed at the caller's site-packages and DYLD_LIBRARY_PATH
+  at the caller's dylibs: a compiled extension built against one environment loading
+  inside an interpreter built against another, which on macOS is a segfault and not
+  an ImportError. That matters most for this tool precisely because it is already
+  the fragile case, loading PyTorch and JAX with their two OpenMP runtimes in one
+  process; two copies of that pair from two environments is worse than one.
 
-  predictors/foldamyloid.py was a WALTZ copy referencing a spec that did not
-  exist. Rewritten: delimiter and encoding sniffing, name-based column lookup,
-  and a sequence-identity guard that refuses a file whose residues do not match
-  the query -- which caught two genuinely mis-filed exports, RPL27 and RPS28
-  holding each other's data. The runner reads the long-result window (the
-  base64 `tbl` field) rather than the short summary.
+  child_environment() drops PYTHONPATH, PYTHONHOME, PYTHONEXECUTABLE, DYLD_* and
+  LD_* and VIRTUAL_ENV, rewrites CONDA_PREFIX and the leading PATH entry to the
+  interpreter's own environment, and passes everything else through -- HF_HOME,
+  AMYLODEEP_MODEL_DIR, proxies and locale all matter and none crosses an ABI
+  boundary. It is pure, so the sanitising is tested without launching anything.
+  sanitise_environment = false restores the old behaviour, which is what makes the
+  fix falsifiable: if the crash survives sanitising, the environments were not the
+  cause. kmp_duplicate_lib_ok is offered as a DIAGNOSTIC and says so in the config --
+  it lets a second OpenMP runtime load rather than abort, which identifies the
+  duplicate and leaves two runtimes in one process.
 
-runners/archcandy_v2.py, predictors/archcandy_v2.py  (new)
+  With the paths cleaned, the failure mode changed from SIGSEGV to a plain Python
+  exception -- jax's own check reporting jaxlib 0.10.2 against a jax wanting
+  >= 0.11.2. That is a pre-existing mismatch inside the AmyloDeep environment,
+  surfaced rather than caused: previously `import jax` in the bootstrap could reach
+  the CALLER's jax while jax_unirep came from AmyloDeep's env, and a mixed pair
+  crashes natively instead of failing a version check. An honest error in place of a
+  segfault is the outcome the isolation was for; the mismatch itself is the user's
+  to fix, and the runner now names the paired install that fixes it.
 
-  The 1.x web route (index.php?route=tools&tool=7) no longer exists; the
-  rebuilt site serves ArchCandy 2.0 over an anonymous REST endpoint.
-  ArchCandy is two programs behind one config section -- the service is 2.0, the
-  downloadable JAR is 1.0 with a published 0.56 cutoff -- so `local_threshold`
-  is now applied when, and only when, the local backend wins. Nothing read it
-  before, and `backend = auto` finds no JAR on the analysis machine, so the
-  discrepancy would have surfaced as a quiet 0.01 shift the first time it did.
+core/compat.py -- a workaround must never be fatal
 
-runners/crossbeta_v2.py  (new)
+  The generated bootstrap applies the jax_unirep clip fix in the interpreter that
+  runs the model. It caught only ImportError -- and a broken jax raises other
+  things, jax's jaxlib check raising RuntimeError -- so a mismatched pair killed the
+  bootstrap BEFORE AmyloDeep started. A problem confined to one of five heads then
+  presented as total failure, and the per-artefact diagnostics added earlier never
+  got the chance to say which head was unusable. Any failure to apply the patch is
+  now reported to stderr and stepped over: only the UniRep head needs jax, and
+  predict_ensemble already averages four with heads_used recording it.
 
-  Cross-Beta-Pred 2.0's REST API is anonymous: the reCAPTCHA gates the page, not
-  the endpoint, and "Download result" is a plain fetch rather than a Blob, so
-  nothing reaches a downloads folder. The earlier 404 that suggested otherwise
-  came from probing `crossBetaPred`; the tool key is `crossbetaPred`, lower-case
-  b. Parses 0-based `index`, `mean_confidence` and `AR_list`.
+  The diagnostics also truncated themselves into uselessness. Every branch inlined
+  combined[:400], and on the real crash that cut the text off mid-path ("...\n/Use")
+  -- discarding the line that named the fault, while looking complete. A crash in
+  compiled code prints its useful line and then dies, so that line is at the END of
+  the stream: the excerpts are now tails, and the whole output is written to
+  <output>.log with the argv, the interpreter, the returncode and whether
+  sanitising was on, named in every message.
 
-runners/aggreprot_web.py  (new), runners/aggreprot.py
+runners/amylogram.py, runners/tango.py, tests/test_runner_batch_protocol.py (new)
 
-  Submission is a page flow, and the API looks like it works: POST /api/jobs
-  only allocates a six-character id -- it accepts any body -- while a separate
-  PUT carries the data, so probing the POST returns plausible ids while creating
-  empty jobs. Retrieval needs none of it: GET /api/jobs/{id}.csv?download=true
-  is what "Download results (CSV)" links to, anonymous, and byte-compatible with
-  what amyloscope's adapter already reads. The JSON route is kept as a fallback
-  and verified identical to 1e-12. `submission_recipe()` emits the click sequence
-  as data rather than driving a browser from inside the package.
+  Three failures from one orthologue-sweep run, all of which reached RUN time
+  because nothing checked for them earlier.
 
-  pdb_id no longer disappears. It was accepted by the config and by the web
-  runner but not declared by AggreProtRunner, which is what a panel run
-  constructs, so it was filtered out with a warning and the job went through
-  structure-free -- returning sasa = null for every residue, the exact value
-  pdb_id exists to obtain. The PUT payload has no structure channel (the server
-  rejects structSource), so setting it there is now an error naming
-  `aggreprot_web`, not a silent downgrade.
+  AmyloGram died with `'AmyloGramRunner' object has no attribute 'execute_batch'`.
+  The scheduler's generic path calls execute_batch() and discover_outputs() on
+  whatever runner it is handed, and this class implemented neither -- while
+  BasePredictorRunner marks only run() abstract, so nothing declared the protocol.
+  Both are now implemented over the runner's own per-protein logic (R startup
+  dominates per call, so a batch is a loop, and it belongs in the runner rather
+  than the scheduler).
 
-predictors/amylogram.py, runners/amylogram.py
+  Neither the batch path nor run() ever cleaned up. run() built a mkdtemp with no
+  owner and no remover; the batch loop created a directory per protein and left it,
+  so a 372-protein sweep accumulated 372 directories of peptide FASTAs and
+  generated R scripts and its disk use grew with the proteins already finished. The
+  distinction the leaking mkdtemp never made is now explicit: a caller-supplied
+  work_dir belongs to the caller and is untouched, a temporary one is this call's
+  and is removed in a finally block -- including when scoring raises, since a sweep
+  with a few bad sequences would otherwise leave behind exactly the directories
+  worth cleaning. keep_intermediates = true preserves them for one run when a
+  projection needs checking by hand, and a test asserts the published CSV survives
+  the cleanup that removes everything around it. test_runner_batch_protocol.py then asserts the protocol for
+  every predictor key that reaches the generic path -- at collection time rather
+  than at hour three of a sweep. A first draft demanded it of every registered
+  class and failed on PATHRunner and AggreProtWebRunner, which is wrong twice
+  over: PATH has a dedicated scheduler path, and aggreprot_web is an alias for
+  pinning an implementation, not a schedulable key. The test now scopes itself and
+  a second test guards the exemption list against the dangerous direction of drift.
 
-  AmyloGram scores hexapeptides, so a per-residue track is a projection, not a
-  read-out, and the projection rule is the modelling choice. Default is
-  `support` at 0.5: the fraction of windows covering a residue that call it
-  amyloidogenic, which answers "do the models containing this residue agree"
-  rather than max's "does any window containing it fire". max, min, mean,
-  median and quantile are available, `coverage_depth` is emitted so terminal
-  residues are not read as equal-confidence, and widths other than 6 warn that
-  the model is being used off its training regime.
+  TANGO died with "[Errno 8] Exec format error: '.../tango_x86_64_release'", which
+  names the file and not the reason -- and Errno 8 has two causes with opposite
+  remedies. A Linux ELF on macOS needs a different build; a Mach-O x86-64 on Apple
+  Silicon needs one softwareupdate command. The distributed filenames name the
+  ARCHITECTURE and not the OS, so they cannot distinguish the two. describe_binary()
+  reads the magic bytes, runnable_here() asks whether this OS can execute that
+  format at all, and require_available() now refuses an unrunnable binary BEFORE
+  the panel starts. Confirmed on the machine in question: the file is the Linux
+  build, so tango is out of the documented local panel with the reason recorded in
+  config.cfg rather than left as a line that cannot run. Both were wrong in a first version and caught by checking:
+  exec_format_report() keyed its advice on the file alone and told a Linux host
+  that macOS cannot run ELF binaries, and the test fixture put ELF's e_machine at
+  offset 17 rather than 18, so a valid x86-64 header read back as "unknown
+  architecture" -- a fixture bug that looked like a parser bug.
 
-runners/pasta.py
+the amyloscope handoff did not actually load: core/amyloscope_export.py,
+cli/export_amyloscope.py
 
-  Submission field is `sequence`, not `mutantfastafile`. PASTA strips every
-  non-word character from FASTA headers -- 6087.XP_002162002.2 becomes
-  6087XP_0021620022 -- so archive members were looked up under names the service
-  never wrote. `pasta_member_key()` reproduces the mangling and
-  `check_member_key_collisions()` refuses a batch in which two accessions
-  collapse to one key, which would otherwise attribute one protein's profile to
-  another silently. Default profile is `free_energy`.
+  A 372-protein export reported "Exported 372 protein(s) across 9 predictor(s)"
+  and then failed inside amyloscope. Four things were wrong at once, and each alone
+  breaks a run. The count was of files created, not a statement that any of them
+  could be read.
 
-runners/waltz.py
+  The adapter named nothing. Every amyloscope adapter parses one TOOL's native
+  export; the config declared `adapter: aggressor`, which no registry entry
+  provides. amyloscope now has that adapter (its own commit, in that repo): it reads
+  the normalised Number, Residue, Score, APR table this package writes, with `flag`
+  detection on APR, and REFUSES a track without APR rather than falling back to a
+  threshold on Score -- which would invert PASTA, whose energy is amyloidogenic when
+  low, and restate on that side every per-tool rule the execution layer exists to
+  settle once.
 
-  Per-residue retrieval via the .dat member; `text_long` never yields one. The
-  striped output on the FXR1 sweep was an SSL drop mid-run, now retried.
+  The tool names were display names. The config was written from
+  spec.display_name ("Aggrescan", "PASTA"), while amyloscope keys both its adapter
+  registry and MECHANISM_FAMILIES on lowercase canonical names -- so a tool loaded
+  under a display name is absent from the family composition that decides whether a
+  tier may move. AMYLOSCOPE_TOOL_NAMES maps the keys explicitly, including the one
+  that genuinely differs between the packages (pasta -> pasta2), and maps PATH to
+  None: it has no adapter and no family there, so it is warned about and skipped
+  rather than written as a name nothing recognises. The warning says what it costs,
+  because a fractional consensus counts the tools it loads and a smaller panel on
+  that side moves every tier.
 
-runners/amylodeep.py, predictors/amylodeep.py
+  The printed command did not run. `amyloscope run -c <config>` was printed as the
+  next step; `config` is POSITIONAL in that CLI. Now `amyloscope run <config>`,
+  with `amyloscope validate <config>` offered first.
 
-  Not a new predictor -- AmyloDeep was added in July (f740e7c, cce1fd9). It now
-  has a registered parser (AmyloDeepParser, wrapping the existing
-  parse_amylodeep) so a protein-language-model tool can be scored and attributed,
-  and it stays absent from `predictors` in config.cfg so it does not vote. Those
-  two facts are pinned separately: registering a parser makes a tool available,
-  the config decides whether it counts, and in a fractional consensus adding one
-  voter moves every tier beneath it.
+  Stale tracks mixed with fresh ones. The writer added to tracks/ rather than
+  replacing it, so a track from an older export -- Number, Residue, Score and no APR
+  -- sat beside the new ones and reached amyloscope, which failed on it per protein.
+  The CLI now refuses a non-empty tracks/ unless --clean is passed.
 
-  The parser reads both output generations. AmyloDeep 0.4 renamed the index column
-  and changed the grain -- one row per RESIDUE with a 1-based `residue_number`,
-  where 0.3 wrote one row per WINDOW with a 0-based `position` -- so a parser that
-  knew only `position` stopped reading the tool entirely the moment it was
-  upgraded. The index column is now resolved by name against
-  (residue_number, position, window_start_0based), and its base is still read from
-  the data rather than assumed from the name, so a shape neither version writes
-  fails loudly instead of quietly.
+  verify_export() closes the loop: every declared track is read back and checked for
+  existence, for the columns the config tells amyloscope to read, and for length
+  agreement with the configured sequence. A failure names the file. Previously the
+  export's success message was an assertion about file counts; it is now a claim
+  that has been tested, which is the difference between finding four defects here
+  and finding them one protein at a time.
 
-  An already-projected table is NOT projected again: projecting twice would widen
-  every boundary by window_size - 1 residues. A 0.4 residue table records the
-  window size and the rule the tool used, so the metadata reports those and adds
-  projected_by=amylodeep; a 0.3 window table is projected here with `max` and
-  reports projected_by=aggressor-wrappers. Both go in the result rather than in a
-  comment, because which rule produced the numbers is what decides how far a
-  shoulder can be trusted, and on the same predictions the two answers differ by
-  eight residues. heads_used and the coverage_depth range are carried too --
-  heads_used flags a run that dropped the XGBoost head and averaged four rather
-  than five, which would otherwise be invisible downstream.
+  export_protein also rejects a merged table whose row count disagrees with the
+  sequence -- the WALTZ symptom, 793 positions against 792 residues -- and the error
+  carries the two commands that find the usual cause, a duplicate FASTA header,
+  since read_fasta keeps the LAST record and a repeated id silently replaces one
+  sequence with another of a different length.
 
-  The runner now ASKS for the grain rather than inheriting it: --resolution,
-  --window-size and --aggregate are passed explicitly (residue / 6 / mean in
-  config.cfg), because the CLI default moved between versions and an implicit
-  default would make one config produce two different profiles depending only on
-  what happened to be installed -- a one-residue shift and a four-residue boundary
-  change, neither visible in the output. Blank config values omit the flags for an
-  older installation, and an argparse rejection is reported as a version mismatch
-  instead of "AmyloDeep produced no output", which pointed at the model when the
-  problem was the argument list.
+core/domains.py (new) -- domains annotated per species, not projected
 
-  What changed is the failure report. `subprocess.run` returns a NEGATIVE
-  returncode when the child dies on a signal, and that number was discarded: a
-  segfault inside a compiled extension never reaches Python's excepthook, so the
-  caller got "AmyloDeep produced no output" with empty stdout and stderr, which
-  is indistinguishable from a dozen other causes. The signal is now named, and
-  SIGSEGV and SIGKILL give different advice, because only one of them is about
-  memory: an OOM is SIGKILL, and a SIGSEGV is a bad access in native code that
-  more RAM will not fix.
+  A reference domain carried onto an orthologue by alignment is an inference about
+  that orthologue, and it inherits every gap on the way. Insertions in a divergent
+  lineage shift coordinates even in a well-conserved protein, and once the interval
+  has been written down the shift is invisible. So annotation is per species, in
+  each orthologue's own numbering, and nothing is transferred.
 
-  The SIGSEGV text names the hypothesis specific to this tool. AmyloDeep is the
-  only predictor here that loads two numerical stacks into one process -- ESM2
-  through PyTorch and UniRep through jax_unirep/JAX -- each with its own OpenMP
-  runtime, which is a known macOS crash. It also states what is NOT the likely
-  cause: the tool scores a running window (default 10 residues) and its preprint
-  states no maximum length, so a long protein is many small inferences, and a
-  10-mer that crashes too rules the input out in one command.
+  Read from SEQUENCE output rather than looked up by id, for a reason specific to
+  this data: an EggNOG set is keyed taxid.proteinid, and those ids come from
+  Ensembl, RefSeq and FlyBase rather than UniProt. InterPro's and UniProt's APIs
+  take accessions, so a lookup route needs id mapping first, and across an
+  opisthokont set a large fraction will not map, will map to several accessions, or
+  will map to an isoform of a different length. A scan has none of those failure
+  modes: the coordinates come back in the numbering of the sequence scanned, which
+  is the numbering the predictor tracks already use.
 
-core/net.py  (new), batch/scheduler.py, batch/pipeline.py
+  Three readers, one shape. hmmscan --domtblout (Pfam-A is ~1.5 GB against
+  InterProScan's tens of gigabytes), an InterProScan TSV, and a plain table for any
+  other route; the format is detected from the file's own content. `source` is
+  recorded so the three stay distinguishable afterwards.
 
-  PermanentToolError, classify() and retry_call() with exponential backoff and
-  full jitter. The scheduler distinguishes SKIPPED (a documented refusal) from
-  FAILED (a run that broke), because a CAPTCHA gate and a TLS blip printed
-  identically before and both counted towards "N failed".
+  Four details that are easy to get wrong and were each pinned by a test:
 
-  Two batch-level defects, both found on a 372-protein sweep:
+  The ENVELOPE coordinates (domtblout columns 20-21) are used, not the alignment
+  coordinates (18-19). HMMER's alignment bounds are where the model matched
+  confidently; the envelope is where the domain is inferred to lie, which is what a
+  domain figure means. Using the alignment under-draws every domain at both ends.
 
-  The raw-file keyword was resolved from a hardcoded runner_key -> keyword map.
-  A runner absent from it received raw_csv=None together with skip_run=True and
-  raised its own skip-run guard -- naming a flag the operator had not used.
-  FoldAmyloid and AGGRESCAN failed exactly this way, having been written
-  correctly and simply not added to a list. Now resolved from
-  inspect.signature(runner.run), so a new predictor cannot regress it by
-  omission.
+  The row is split on the first 22 fields only, because the final field is a free-
+  text description. Splitting the whole line puts words into numeric columns.
 
-  The batch ladder raised "Batch runner not implemented" for anything not
-  explicitly listed, so adding a predictor meant editing the scheduler too.
-  Replaced by _run_generic_batch() for any runner exposing execute_batch +
-  discover_outputs.
+  Overlapping models of one domain collapse to the best hit. Pfam reports KH_1 and
+  KH_dom over the same residues, and drawing both stacks two boxes where the protein
+  has one domain. Ties break on width then name rather than on input order, since a
+  figure that changes between runs on identical data is worse than either choice.
+  keep="all" preserves the ambiguity for a caller who wants it.
 
-  A permanent refusal is now isolated per submission rather than per predictor:
-  one sequence a service will not accept costs that protein, not the other 371.
-  If nothing gets through it still raises, so the predictor reads as skipped
-  rather than contributing an empty column that downstream code would take for
-  an abstention.
+  A hit past the end of the sequence is DROPPED, not clipped. Beyond the end means
+  the annotation and the sequence are different proteins -- a stale scan, another
+  isoform -- and shortening it to fit produces a plausible-looking box in the wrong
+  place. An unrecognised domain name gets category "default" rather than a guess,
+  for the same reason: a grey box that claims nothing beats a wrong colour that
+  invites a reading the data does not support.
 
-runners/registry.py, core/config.py, core/schema.py, config.cfg
+  Exposed as `aggressor-export-amyloscope --domains <file>`, which reports how many
+  proteins were annotated and warns when none matched -- the symptom of a scan run
+  on re-headered sequences. Verified end to end against amyloscope's own loader: a
+  config carrying two orthologues of different lengths, each with its own
+  coordinates, parses there and runs through compute_consensus.
 
-  configparser now sets inline_comment_prefixes. Without it `threshold = 0.57 #
-  0.4` yields the string "0.57 # 0.4", which reaches a constructor and dies on
-  float() far from the line that caused it -- this is how ArchCandy stopped
-  running while its config still looked correct.
+tests/: two invariant tests replaced two roster assertions
 
-  Backend selection moved into a _BACKENDS table with select_backend() dispatch,
-  and constructors are filtered against their own signatures, so an option no
-  implementation of that predictor accepts is reported once, at construction,
-  instead of vanishing into whichever backend won. score_mode is consolidated in
-  [predictors.archcandy]; a leftover copy in [runners.archcandy] is reported
-  rather than silently preferred. New foldamyloid spec (threshold 21.4 expected
-  contacts within 8 A, Garbuzynskiy et al. 2010).
+  test_pipeline_predictors_from_config pinned the exact eight-predictor default, and
+  another test pinned tango, amylogram and amylodeep OUT of it. Adding the two local
+  tools for an orthologue sweep -- a correct decision, since the web-backed
+  predictors cannot serve 10^4 sequences -- therefore failed two tests while
+  changing nothing about correctness. Which tools vote is the user's choice; both
+  tests now assert what a roster must satisfy however it is composed: every member
+  has a spec, no member repeats (a repeat silently double-weights one tool in a
+  fractional consensus), and PATH stays out because its licensed dependencies mean a
+  shipped default containing it would not run on a clean checkout.
 
-docs/WEB_CONTRACTS.md  (new)
+  Writing those invariants immediately found a real gap and then corrected my own
+  reading of it: amylogram is in the panel and in no parser registry, which looks
+  like a latent failure until you see that its RUNNER writes the standard
+  per-residue CSV itself and so never reaches get_parser. The invariant is therefore
+  reachability by either route, not "every voter has a parser" -- which would have
+  failed on a correct configuration.
 
-  The wire contract for every web predictor as captured from the services
-  themselves, with the validation case for each and the reasoning for what was
-  deliberately NOT added: TAPASS and ST-ARCH both build on panel members
-  already enabled (ArchCandy, TANGO, PASTA), so including them would count one
-  line of evidence twice.
+cli/export_amyloscope.py (new), core/amyloscope_export.py, cli/app.py, cli/batch.py
 
-Module naming, and where superseded code goes
+  `aggressor-wrappers export-amyloscope` (also aggressor-export-amyloscope).
+  export_run() already existed and was tested, but was reachable only from
+  Python -- an integration that worked in pytest and not on a desk.
 
-  A digit suffix in this project names a TOOL version, not a file revision, and
-  nothing on disk said so. The consequence was concrete: `.gitignore` had
-  `src/runners/*2.py` and `src/predictors/*2.py` under "old scripts", which hid
-  archcandy2.py, crossbeta2.py and predictors/archcandy2.py -- all three imported
-  by runners/registry.py -- so a fresh clone would have raised ImportError before
-  any predictor ran. The ignore rule was aimed at the Finder/iCloud duplicate
-  form ("pipeline 2.py", a space then the digit) and is now written that way,
-  `* [0-9].py`. The ambiguity is removed at the source rather than documented
-  around it:
+  Its tests also hid a naming defect. They wrote <protein_id>.csv fixtures while
+  batch/pipeline.py writes <protein_id>_merged.csv, so on a real run every
+  exported id became "RPS2_merged". amyloscope matches tracks to proteins by that
+  id, so the mismatch would have dropped every protein from the analysis silently
+  rather than failing. protein_id_from_merged() strips the suffix and leaves a
+  bare stem alone, and the new tests use the pipeline's own naming.
 
-  Live modules renamed, so the version reads as a version:
-      src/runners/archcandy2.py     -> src/runners/archcandy_v2.py
-      src/runners/crossbeta2.py     -> src/runners/crossbeta_v2.py
-      src/predictors/archcandy2.py  -> src/predictors/archcandy_v2.py
-      tests/test_archcandy2.py      -> tests/test_archcandy_v2.py
-      tests/test_crossbeta2.py      -> tests/test_crossbeta_v2.py
-  Config keys keep the short spelling (`archcandy2`, `crossbeta2`), so existing
-  config.cfg files and saved runs are unaffected. Class names are unchanged.
+  The subcommand also accepts <output>/ in place of <output>/merged/, since
+  pointing at the run directory is the obvious mistake and the old failure named a
+  directory that did contain the files one level down.
 
-  Superseded runners retired to legacy/runners/, which the package does not
-  import -- pyproject packages only src/, so nothing there can be reached from
-  the registry:
-      src/runners/archcandy.py -> legacy/runners/archcandy_v1_deprecated.py
-      src/runners/crossbeta.py -> legacy/runners/crossbeta_v1_deprecated.py
-  Neither could fetch anything. ArchCandy's 1.x runner drove
-  index.php?route=tools&tool=7, an entry point the rebuilt site no longer serves,
-  so every request it made was a dead link -- not a bug, a route that is gone.
-  Cross-Beta's form runner refused to run by design on the reCAPTCHA gate, and
-  was in any case unreachable: both the `crossbeta` and `crossbeta2` keys
-  resolved to CrossBeta2Runner, so no configuration could construct it. Each file
-  carries a header saying which of the two it is and when it was superseded, and
-  legacy/runners/README.md states the naming rule.
+config.cfg, core/metascore.py
 
-  Retiring the runners does NOT affect reading historical output from either
-  tool. That is the parser -- predictors/archcandy.py and
-  predictors/crossbeta.py, both still live under their own keys -- and there are
-  now tests asserting exactly that, so the retirement cannot later be mistaken
-  for losing the ability to read old files.
+  [metascore] method: weighted_sum -> fractional_consensus. The shipped default
+  was the combiner this file's own comment calls deprecated -- dominated by the
+  widest-scaled predictor (WALTZ 0-100 against APPNN 0-1) and adding PASTA, whose
+  energy is inverted, with a positive weight. fractional_consensus counts evidence
+  over the per-tool binary calls, so it is scale-free and polarity-correct by
+  construction, and it is the same model amyloscope applies downstream: one
+  consensus definition across both packages rather than two that drift.
+  weighted_sum and zscore_consensus stay registered and are commented in the file.
 
-  The `archcandy_legacy` key is removed rather than aliased. Pointing it at
-  ArchCandy 2.0 would answer a request for one tool version with another, and the
-  output would then be scored on 2.0's scale while the config still named 1.x. An
-  unknown-predictor KeyError is the honest reply.
+  Making that switch exposed a check that could only ever fire wrongly:
+  compute_weighted_metascore() re-read cfg.metascore.method and raised
+  NotImplementedError for anything but "weighted_sum". Since the registry calls it
+  only when weighted_sum was asked for, being called IS the decision -- so
+  choosing another method made the combiner you had chosen AWAY from raise from
+  inside the branch that was not taken. Dispatch belongs to compute_metascore(),
+  which still rejects an unknown method by name, and a test now pins both halves.
 
-config.cfg, grouped by backend
 
-  [runners.archcandy] and [runners.crossbeta] each drive two programs -- a web
-  service and a local build -- and their options were interleaved, which is how
-  `local_threshold` sat unread for so long without looking wrong. Both sections
-  are now split into "backend choice", "web arm" and "local arm" blocks, each
-  naming the module it configures. The Cross-Beta comment claiming the web arm
-  "refuses at submission time with the reCAPTCHA explanation" is deleted: that
-  described the retired form runner, and the 2.0 API it now describes submits
-  anonymously. resolve_backend() also reported aggrescan and foldamyloid as
-  "local" when both are web-only, which would have told a pre-flight check that a
-  web tool was about to run offline.
+config.cfg -- [predictors.pasta] energy_threshold: -2.8 -> -5.0
+
+  -2.8 called 87.2% of all residues on the sweep (198,087 of 227,106). A panel
+  member that calls seven residues in eight is not a voter but a constant: it
+  entered every consensus region by arithmetic rather than by agreement, raising
+  the apparent support of each by exactly one tool. -5.0 is the published
+  pairing-energy operating point (Walsh et al. 2014) and calls 27.5%, which sits
+  with APPNN (27.5%) and Cross-Beta (25.1%).
+
+  The value is backed by code as of 3deeaf6: PASTAParser now resolves its default
+  from spec.default_threshold rather than carrying a second number, the runner no
+  longer defaults the APR cutoff to `amount` (the web form's SUBMISSION parameter,
+  which decides what the server reports, not what counts as an APR), and both are
+  pinned by tests. The config line and the parser can no longer disagree.
+
+cli/export_amyloscope.py -- the __main__ guard moved below _EPILOG
+
+  `python -m aggressor_wrappers.cli.export_amyloscope` raised
+  "NameError: name '_EPILOG' is not defined". Running a module as __main__
+  executes it top to bottom, and the guard sat ABOVE the string it needs, so
+  main() was called before the assignment. The console script was unaffected --
+  an entry point imports the module, running it to the end, and then calls
+  main() -- which is why the failure appeared only on the `python -m` route, the
+  one anybody without an editable install would take.
 
 Tests
 
-  293 passed, 7 skipped. Fixtures are verbatim service replies, including a full
-  334-residue AGGRESCAN page: the previous Abeta42 fixture was a hand-reduced
-  stub with balanced markup, short enough that the wrong Hot Spot rule agreed
-  with the right one -- a fixture that could not fail. It is re-wrapped in the
-  real page layout with its numbers untouched.
+  Every suite passes. Six new test files: subprocess isolation (11 leaking
+  variables dropped, the pass-through set preserved, os.environ unmutated),
+  AmyloDeep batching (one --input invocation for 20 proteins, resume, every flag
+  reaching the batch argv), the batch protocol asserted at COLLECTION time for
+  every schedulable key, AmyloGram cleanup, binary-format diagnosis, and domains.
 
-Note on the diff size
+    new       tests/test_subprocess_isolation.py
+              tests/test_amylodeep_batching.py
+              tests/test_runner_batch_protocol.py
+              tests/test_amylogram_cleanup.py
+              tests/test_binary_format_diagnosis.py
+              tests/test_domains.py
+    changed   tests/test_amylodeep_crash.py
+              tests/test_amyloscope_export.py
+              tests/test_config_presets.py
+              tests/test_metascore_plugins.py
 
-  Nine tracked files were CRLF at HEAD and are LF here (runners/waltz.py,
-  runners/aggreprot.py, runners/registry.py, predictors/registry.py, the two
-  retired runners, both archcandy/crossbeta runner tests, and .gitignore), so
-  their diffs read far larger than the edit. Raw diff: 2635 insertions / 1661
-  deletions; real change 1756 / 782, which `git diff --ignore-cr-at-eol` shows.
-  The repo has no .gitattributes, which is why this keeps happening.
+  pyproject.toml adds the console scripts: `aggressor-export-amyloscope`, and
+  `export-amyloscope` as an `aggressor-wrappers` subcommand.
+
+Three things worth deciding before this lands
+
+  config.cfg now carries three machine-local absolute paths under
+  /Users/kseniasuhanova/ -- [runners.tango] binary_path, and [runners.amylodeep]
+  executable / python / model_dir. They are correct for this machine and wrong
+  for every other one, including CI. Either keep them and say so, or move them to
+  a local override file and ship the keys unset.
+
+  core/metascore.py reads as 151 changed lines and is one deleted `if`: the file
+  went CRLF -> LF. `git diff --ignore-cr-at-eol` shows the real change. The repo
+  still has no .gitattributes, which is why this keeps recurring -- see the note
+  on diff size in the previous commit.
+
+  tests/test_config_presets.py asserts `"path" not in predictors` twice, with the
+  surrounding comment block largely repeated. Harmless, but it reads as an
+  editing artefact rather than a deliberate second check.
 
 Still open
 
-  `src/batch/pipeline 2.py` is a tracked Finder duplicate from 11 Jul and needs
-  `git rm`; the new ignore rule does not untrack it.
+  `src/batch/pipeline 2.py` is a tracked Finder duplicate and needs `git rm`; the
+  ignore rule does not untrack what is already tracked.
 
-BREAKING CHANGE: AGGRESCAN Hot Spot calls change. The mask is now read from the
-service's NHSA column instead of re-derived from a4v, which removes hot spots the
-old rule invented and trims shoulders it added (on a 334-residue protein: 11 hot
-spots over 84 residues, against 12 over 101). Any AGGRESCAN track produced by an
-earlier version should be regenerated before it is compared with a new one, and
-any consensus tier or breadth figure that used one should be recomputed.
+  `_run_amylodeep.py` is sitting untracked in the repo ROOT. It is the generated
+  bootstrap -- its own docstring says "Generated by aggressor-wrappers" -- so it
+  is a run artefact rather than source, and committing it would ship a file the
+  runner rewrites. It wants an ignore rule (or a generated/ directory), not a
+  `git add`. Worth checking whether the runner should be writing it somewhere
+  other than the working directory it happened to be launched from.
 
-Also breaking: the `archcandy_legacy` runner key is removed and now raises
-KeyError, and aggressor_wrappers.runners.archcandy / .crossbeta no longer import
-(both retired to legacy/runners/); [runners.aggreprot] pdb_id now raises when the
-default API runner is the one submitting, instead of being ignored;
-[runners.archcandy] local_threshold is now applied by the local backend instead
-of having no effect; the default predictor list in config.cfg gained foldamyloid
-and aggrescan. Parser keys are all unchanged, so reparsing existing output is
-not affected.
+  export_run() does not pass `sequence=` to export_protein(), so the row-count
+  guard added there never fires on a full CLI export -- verify_export() catches
+  the same disagreement afterwards instead. Deliberate or not, only one of the
+  two is load-bearing.
+
+BREAKING CHANGE: [metascore] method defaults to fractional_consensus rather than
+weighted_sum. The two combiners do not agree -- weighted_sum is dominated by the
+widest-scaled predictor and adds PASTA's inverted energy with a positive weight --
+so any metascore produced by an earlier version should be recomputed rather than
+compared with one from this.
+
+Also: [predictors.pasta] energy_threshold changes what PASTA calls, from 87.2% of
+residues to 27.5%. Every consensus tier computed from a PASTA track made by an
+earlier version moves. Regenerate rather than mix.

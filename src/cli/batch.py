@@ -12,7 +12,9 @@ from aggressor_wrappers.core.config import default_pipeline_predictors, load_con
 from aggressor_wrappers.predictors.registry import list_parsers
 from aggressor_wrappers.runners.registry import list_runners
 
-_SUBCOMMANDS = frozenset({"parse", "merge", "run", "widemerge", "batch"})
+_SUBCOMMANDS = frozenset(
+    {"parse", "merge", "run", "widemerge", "batch", "export-amyloscope"}
+)
 
 
 def is_subcommand(argv: list[str]) -> bool:

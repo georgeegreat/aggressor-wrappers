@@ -40,6 +40,7 @@ aggressor-parse = "aggressor_wrappers.cli.parse:main"
 aggressor-merge = "aggressor_wrappers.cli.merge:main"
 aggressor-run = "aggressor_wrappers.cli.run:main"
 aggressor-widemerge = "aggressor_wrappers.cli.widemerge:main"
+aggressor-export-amyloscope = "aggressor_wrappers.cli.export_amyloscope:main"
 
 [tool.setuptools.dynamic]
 # Single source of truth for the version: src/__init__.py.

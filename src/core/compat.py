@@ -107,10 +107,28 @@ import sys
 
 
 def _patch():
+    """Apply the clip fix if it is both possible and needed. Never fatal.
+
+    This is a WORKAROUND for someone else's bug, so failing to apply it must not
+    prevent AmyloDeep from starting. The first version caught only ImportError,
+    and a broken jax raises other things -- jax's own jaxlib version check raises
+    RuntimeError -- so a mismatched jax/jaxlib pair killed the bootstrap before
+    AmyloDeep ran at all. The tool then could not even report WHICH of its five
+    heads was unusable, and a problem confined to the UniRep head presented as a
+    total failure.
+    """
     try:
         import jax.numpy as jnp
         import jax_unirep.activations as activations
-    except ImportError:
+    except Exception as exc:  # noqa: BLE001 - a workaround must not be fatal
+        print(
+            f"aggressor-wrappers: the jax_unirep clip fix was NOT applied "
+            f"({type(exc).__name__}: {exc}). Continuing without it -- AmyloDeep "
+            f"will report which heads it could load. If this is a jax/jaxlib "
+            f"version mismatch, install the two as a matched pair in this "
+            f"environment.",
+            file=sys.stderr,
+        )
         return
     if getattr(activations.safe_sigmoid_exp, "_aggressor_patched", False):
         return
@@ -119,6 +137,13 @@ def _patch():
         return
     except TypeError:
         pass
+    except Exception as exc:  # noqa: BLE001 - as above
+        print(
+            f"aggressor-wrappers: could not probe jnp.clip ({type(exc).__name__}: "
+            f"{exc}); leaving jax_unirep unpatched.",
+            file=sys.stderr,
+        )
+        return
 
     def safe_sigmoid_exp(x, clip_value=-88):
         return 1 / (1 + jnp.exp(-jnp.clip(x, clip_value)))

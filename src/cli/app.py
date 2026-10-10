@@ -14,7 +14,8 @@ def build_root_parser() -> argparse.ArgumentParser:
         prog="aggressor-wrappers",
         description=(
             "AGGRESSOR companion package: run amyloidogenicity predictors on a multifasta, "
-            "or dispatch to specialised subcommands (parse, merge, run, widemerge)."
+            "or dispatch to specialised subcommands (parse, merge, run, widemerge, "
+            "export-amyloscope)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_ROOT_EPILOG,
@@ -60,6 +61,10 @@ def main(argv: list[str] | None = None) -> int:
             from aggressor_wrappers.cli.widemerge import main as widemerge_main
 
             return widemerge_main(rest)
+        if command == "export-amyloscope":
+            from aggressor_wrappers.cli.export_amyloscope import main as export_main
+
+            return export_main(rest)
         if command == "batch":
             return run_pipeline(rest, prog="aggressor-wrappers batch")
 
@@ -78,6 +83,13 @@ subcommands (also as standalone entry points):
   run        aggressor-run         Execute PATH/APPNN → standard CSV
   widemerge  aggressor-widemerge   Merge + optional BHT reference validation
   batch      (alias)               Same as primary usage above
+
+analysis handoff:
+  export-amyloscope  aggressor-export-amyloscope
+      Merged tables -> amyloscope tracks + config.yaml. Consensus tiers,
+      statistics and figures live in amyloscope; this package runs the
+      predictors, parses them and binarises each with its own rule, and the
+      per-tool APR flag is what crosses over.
 
 examples:
   aggressor-wrappers vendor/PATH/test.fasta -o output_dir
