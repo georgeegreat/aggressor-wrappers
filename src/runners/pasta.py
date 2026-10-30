@@ -14,7 +14,11 @@ from pathlib import Path
 
 from aggressor_wrappers import __version__
 from aggressor_wrappers.core.fasta import read_first_sequence, read_fasta
-from aggressor_wrappers.core.net import PermanentToolError, retry_call
+from aggressor_wrappers.core.net import (
+    PermanentToolError,
+    retry_call,
+    urlopen_keeping_method,
+)
 from aggressor_wrappers.core.schema import PredictorResult, get_predictor_spec
 from aggressor_wrappers.predictors.pasta import PASTAParser, PUBLISHED_ENERGY_THRESHOLD
 from aggressor_wrappers.runners.base import BasePredictorRunner
@@ -220,7 +224,12 @@ class PASTARunner(BasePredictorRunner):
         request.add_header("Content-Type", content_type)
 
         def _submit() -> str:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            # Through the method-preserving opener: if the service answers the
+            # POST with a scheme upgrade, urllib's default handler turns it into
+            # a GET and the body is gone. PASTA then returns its policy page
+            # instead of a job URL, which is what "did not return a job URL:
+            # .../policy.html" means.
+            with urlopen_keeping_method(request, timeout=self.timeout_seconds) as response:
                 if response.status not in {200, 302}:
                     raise RuntimeError(f"PASTA submission returned HTTP {response.status}")
                 return response.geturl()

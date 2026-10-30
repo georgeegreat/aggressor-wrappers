@@ -28,6 +28,7 @@ import socket
 import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Callable, Literal
 
@@ -128,3 +129,84 @@ def urlopen_retry(request, *, timeout: float | None = None, **kwargs):
             return response.read(), getattr(response, "status", 200), response.geturl()
 
     return retry_call(_call, **kwargs)
+
+
+def _is_scheme_upgrade(old_url: str, new_url: str) -> bool:
+    """True when a redirect only moves http to https, same host and path."""
+    a = urllib.parse.urlsplit(old_url)
+    b = urllib.parse.urlsplit(new_url)
+    return (
+        a.scheme == "http"
+        and b.scheme == "https"
+        and a.hostname == b.hostname
+        and a.path == b.path
+        and a.query == b.query
+    )
+
+
+class _MethodPreservingRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects that are required to repeat the request as it was.
+
+    urllib does not follow 307 or 308 after a POST: its redirect_request accepts
+    those codes only for GET and HEAD, and otherwise raises. Those two codes
+    exist precisely to say "repeat this request, method and body included", so a
+    service that has moved answers a form submission with HTTP Error 307 and the
+    caller sees what looks like an outage. WALTZ fails exactly this way, and no
+    amount of retrying helps, because nothing about it is transient.
+
+    301 and 302 after a POST are turned into a GET by urllib. That is long
+    settled browser behaviour and is left alone, with one exception: a bare
+    scheme upgrade, where a server moves http to https on the same host and
+    path. The body is dropped there too, and the service then answers whatever
+    an empty GET produces -- for PASTA, a policy page where a job URL was
+    expected. Only that case is overridden. Changing 301 and 302 in general
+    would alter how every runner behaves on redirects nobody has examined.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        method = req.get_method()
+        repeat = code in (307, 308) or (
+            code in (301, 302)
+            and method not in ("GET", "HEAD")
+            and _is_scheme_upgrade(req.full_url, newurl)
+        )
+        if not repeat:
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+        # Host and Content-Length belong to the old request; urllib recomputes
+        # both. Carrying them over sends the new host the old one's values.
+        carried = {
+            key: value
+            for key, value in req.header_items()
+            if key.lower() not in ("host", "content-length")
+        }
+        return urllib.request.Request(
+            newurl,
+            data=req.data,
+            headers=carried,
+            origin_req_host=req.origin_req_host,
+            unverifiable=True,
+            method=method,
+        )
+
+
+_METHOD_PRESERVING_OPENER: urllib.request.OpenerDirector | None = None
+
+
+def method_preserving_opener() -> urllib.request.OpenerDirector:
+    """A shared opener that keeps POST bodies across the redirects above.
+
+    Built once: build_opener installs the default handler set, and a new opener
+    per request would also mean a new connection pool and a new cookie-free
+    context each time.
+    """
+    global _METHOD_PRESERVING_OPENER
+    if _METHOD_PRESERVING_OPENER is None:
+        _METHOD_PRESERVING_OPENER = urllib.request.build_opener(
+            _MethodPreservingRedirect()
+        )
+    return _METHOD_PRESERVING_OPENER
+
+
+def urlopen_keeping_method(request, *, timeout: float | None = None):
+    """urlopen, but a redirected POST stays a POST where the code demands it."""
+    return method_preserving_opener().open(request, timeout=timeout)

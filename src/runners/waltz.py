@@ -13,7 +13,11 @@ from pathlib import Path
 
 from aggressor_wrappers import __version__
 from aggressor_wrappers.core.fasta import read_first_sequence, read_fasta
-from aggressor_wrappers.core.net import PermanentToolError, retry_call
+from aggressor_wrappers.core.net import (
+    PermanentToolError,
+    retry_call,
+    urlopen_keeping_method,
+)
 from aggressor_wrappers.core.schema import PredictorResult
 from aggressor_wrappers.predictors.waltz import WALTZParser, split_detailed_sections
 from aggressor_wrappers.runners.base import BasePredictorRunner
@@ -254,6 +258,11 @@ class WALTZRunner(BasePredictorRunner):
         return mapping
 
     def _post(self, url: str, data: bytes) -> str:
+        # The POST goes through the method-preserving opener: waltz.switchlab.org
+        # answers 307, and urllib's own redirect handler raises on 307 after a
+        # POST instead of repeating it. The failure reads as "WALTZ request
+        # failed ... HTTP Error 307: Temporary Redirect", which looks like an
+        # outage and is not one -- the service has moved and is saying so.
         request = urllib.request.Request(url, data=data, method="POST")
         request.add_header("User-Agent", _USER_AGENT)
         request.add_header("Content-Type", "application/x-www-form-urlencoded")
@@ -268,7 +277,7 @@ class WALTZRunner(BasePredictorRunner):
         request = urllib.request.Request(url, method="GET")
         request.add_header("User-Agent", _USER_AGENT)
         def _call() -> bytes:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with urlopen_keeping_method(request, timeout=self.timeout_seconds) as response:
                 return response.read()
 
         try:
@@ -285,7 +294,7 @@ class WALTZRunner(BasePredictorRunner):
         discarded every batch already parsed.
         """
         def _call() -> str:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with urlopen_keeping_method(request, timeout=self.timeout_seconds) as response:
                 return response.read().decode("utf-8", errors="replace")
 
         try:
