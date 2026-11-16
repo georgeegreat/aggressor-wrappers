@@ -117,6 +117,7 @@ def run_multifasta_pipeline(
     resume: bool = True,
     save_raw_files: Path | None = None,
     keep_cache: bool = False,
+    merge_existing: bool = False,
     log: LogFn | None = None,
 ) -> dict[str, Path]:
     """
@@ -128,6 +129,14 @@ def run_multifasta_pipeline(
     When ``resume`` is true (default) and ``skip_run`` is false, existing
     ``{PREDICTOR}/parsed/{id}_*.csv`` files are validated against the input
     FASTA (length and ``aa_name``) and skipped when they already match.
+
+    ``merge_existing`` widens the MERGE step only: every registered predictor
+    that already has a parsed table in this output tree enters the merged
+    table, not only the ones asked for in this invocation. It exists because
+    adding one tool to a finished panel otherwise meant re-running all of
+    them. Each predictor it adds is named in the log, because a merged table
+    is the denominator of every consensus tier computed from it and a panel
+    that changes width without saying so is the worst kind of wrong.
 
     Returns ``{protein_id: merged_csv_path}``.
     """
@@ -150,8 +159,12 @@ def run_multifasta_pipeline(
     emit(f"[setup] {len(protein_ids)} protein(s); output → {layout.output_dir}")
 
     if skip_run:
-        work_roots = ", ".join(str(layout.predictor_work_dir(k)) for k in runner_keys)
-        emit(f"[setup] --skip-run: parsing raw files from {work_roots}")
+        for key in runner_keys:
+            emit(
+                f"[setup] --skip-run: {_predictor_tag(key)} raw from "
+                f"{layout.predictor_work_dir(key)}/batch_N or the drop zone "
+                f"{layout.predictor_dir(key)}"
+            )
     elif _resume_enabled(resume=resume, skip_run=skip_run):
         emit("[setup] resume enabled: will reuse valid parsed CSVs from prior runs")
 
@@ -193,12 +206,16 @@ def run_multifasta_pipeline(
             emit=emit,
         )
 
+    to_merge = requested
+    if merge_existing:
+        to_merge = _widen_with_existing_parsed(layout, requested, emit=emit)
+
     merged_paths: dict[str, Path] = {}
     for protein_id in protein_ids:
         merged_paths[protein_id] = _merge_protein(
             protein_id,
             layout,
-            requested,
+            to_merge,
             emit=emit,
         )
 
@@ -261,7 +278,7 @@ def _run_runner_batches(
     save_raw_files: Path | None,
     emit: LogFn,
 ) -> None:
-    runner = get_runner(runner_key, config_path=config_path)
+    runner = get_runner(runner_key, config_path=config_path, parse_only=skip_run)
     tag = _predictor_tag(runner_key)
 
     partition = partition_items_for_resume(
@@ -431,6 +448,7 @@ def _run_runner_batches(
                     save_raw_files=save_raw_files,
                     batch_label=batch_label,
                     emit=emit,
+                    drop_zone=layout.predictor_dir(runner_key),
                 )
 
             _parse_and_write_runner_batch(
@@ -697,7 +715,22 @@ def _parse_and_write_runner_batch(
     emit: LogFn,
 ) -> None:
     tag = _predictor_tag(runner_key)
+    # raw_map may legitimately cover only PART of the batch: under --skip-run
+    # the raw files come from wherever they happen to be, and a drop zone
+    # populated by hand on another machine can hold six of seven proteins.
+    # Indexing raw_map directly turned that into a bare KeyError naming a
+    # protein, with nothing to say which predictor or which directory was
+    # short. The proteins that do have raw are parsed; the rest are named.
+    without_raw = [pid for pid in batch_ids if pid not in raw_map]
+    if without_raw:
+        emit(
+            f"[{tag}] batch {batch_label}: no raw output for "
+            f"{', '.join(without_raw)} -- parsing the remaining "
+            f"{len(batch_ids) - len(without_raw)} of {len(batch_ids)}"
+        )
     for protein_id in batch_ids:
+        if protein_id not in raw_map:
+            continue
         raw_csv = raw_map[protein_id]
         single_fasta = layout.fasta_split_dir / f"{protein_id}.fasta"
         emit(f"[{tag}] batch {batch_label}: parsing {protein_id} …")
@@ -733,6 +766,7 @@ def _run_generic_batch(
     save_raw_files: Path | None,
     batch_label: str,
     emit: LogFn,
+    drop_zone: Path | None = None,
 ) -> dict[str, Path]:
     """Batch path for any runner exposing ``execute_batch`` + ``discover_outputs``.
 
@@ -750,14 +784,56 @@ def _run_generic_batch(
     label = getattr(getattr(runner, "spec", None), "display_name", None) or runner_key
 
     if skip_run:
-        emit(f"[{label}] batch {batch_label}: loading raw from {batch_work} …")
-        raw_map = runner.discover_outputs(batch_work, protein_ids)
-        if not raw_map and save_raw_files is not None:
-            raw_map = _archived_runner_outputs(save_raw_files, protein_ids, runner_key)
+        # Three places raw output can be, searched in order of how specific
+        # they are, and MERGED rather than tried in turn: a panel is often
+        # part-local and part-imported, and the first non-empty hit used to win
+        # outright, so three TANGO files left in work/ by an aborted run hid the
+        # four that had been obtained elsewhere.
+        #
+        #   1. {PREDICTOR}/work/batch_N/  -- what a run on this machine left.
+        #   2. {PREDICTOR}/              -- the drop zone: where output from
+        #      another machine is put by hand. TANGO ships a Linux x86_64 ELF,
+        #      so on an arm64 Mac it cannot be executed AT ALL and its output
+        #      can only ever arrive this way; the same holds for any tool run
+        #      on a cluster. Searching only work/batch_N meant the files had to
+        #      be filed under a directory named after a batch index the user
+        #      does not choose and cannot predict.
+        #   3. --save-raw-files archive   -- {root}/{protein}/{predictor}.*
+        sources: list[tuple[str, Path]] = [("work", batch_work)]
+        if drop_zone is not None and drop_zone != batch_work:
+            sources.append(("drop zone", drop_zone))
+        searched = ", ".join(str(path) for _, path in sources)
+        emit(f"[{label}] batch {batch_label}: loading raw from {searched} …")
+
+        raw_map: dict[str, Path] = {}
+        for where, directory in sources:
+            if not directory.is_dir():
+                continue
+            missing = [pid for pid in protein_ids if pid not in raw_map]
+            found = runner.discover_outputs(directory, missing)
+            if found:
+                emit(
+                    f"[{label}] batch {batch_label}: {len(found)} raw file(s) "
+                    f"from the {where} ({directory})"
+                )
+                raw_map.update(found)
+
+        if len(raw_map) < len(protein_ids) and save_raw_files is not None:
+            archived = _archived_runner_outputs(
+                save_raw_files, protein_ids, runner_key
+            )
+            # _archived_runner_outputs is all-or-nothing by design, so it only
+            # contributes when it can cover the whole batch.
+            for protein_id, path in archived.items():
+                raw_map.setdefault(protein_id, path)
+
         if not raw_map:
             raise FileNotFoundError(
-                f"[{label}] batch {batch_label}: no raw output under {batch_work} "
-                f"or {save_raw_files} (--skip-run)"
+                f"[{label}] batch {batch_label}: no raw output for any of "
+                f"{', '.join(protein_ids)}. Looked in {searched}"
+                + (f" and {save_raw_files}" if save_raw_files else "")
+                + ". With --skip-run, raw files obtained elsewhere go in the "
+                f"drop zone {drop_zone}, named as this runner expects."
             )
         return raw_map
 
@@ -1274,6 +1350,74 @@ def _find_raw_file(
             if path.is_file() and predictor_key in path.stem.lower():
                 return path
     return None
+
+
+def _widen_with_existing_parsed(
+    layout: BatchLayout,
+    requested: list[str],
+    *,
+    emit: LogFn,
+) -> list[str]:
+    """Add predictors that already have parsed tables in this output tree.
+
+    Requested predictors keep their order and stay first, so the column order
+    of a merged table does not shuffle between runs. Anything found beyond them
+    is appended in a stable order and NAMED, one line per predictor: this
+    function changes the width of every merged table it touches, which changes
+    what a fractional consensus is a fraction of.
+    """
+    # Dedup by TAG, not by registry key. Several keys can share one tag and so
+    # one parsed file: archcandy and archcandy2 are two parsers (1.x cumulative
+    # vs 2.0, different published cutoffs) writing and reading
+    # {id}_ArchCandy.csv. Widening by key added that single file twice and the
+    # merge refused the batch with "Duplicate predictor in merge input" -- after
+    # every tool had already been parsed.
+    covered = {_predictor_tag(key) for key in requested}
+    by_tag: dict[str, list[str]] = {}
+    for key in list_parsers():
+        if key in requested:
+            continue
+        tag = _predictor_tag(key)
+        if tag in covered:
+            continue
+        parsed_dir = layout.predictor_parsed_dir(key)
+        if not parsed_dir.is_dir() or not sorted(parsed_dir.glob(f"*_{tag}.csv")):
+            continue
+        by_tag.setdefault(tag, []).append(key)
+
+    extra: list[str] = []
+    for tag in sorted(by_tag):
+        candidates = by_tag[tag]
+        # The canonical key for the family wins. Which VERSION wrote the file is
+        # not recorded in it, so the choice is stated rather than assumed.
+        canonical = [k for k in candidates if resolve_predictor_key(k) == k]
+        key = canonical[0] if canonical else candidates[0]
+        parsed_dir = layout.predictor_parsed_dir(key)
+        tables = sorted(parsed_dir.glob(f"*_{tag}.csv"))
+        if len(candidates) > 1:
+            emit(
+                f"[merge] --merge-existing: {tag} tables could belong to any of "
+                f"{', '.join(repr(c) for c in candidates)} -- they share one "
+                f"filename and the file does not record which parser wrote it. "
+                f"Merging as {key!r}; name the other explicitly in --predictors "
+                f"to override."
+            )
+        emit(
+            f"[merge] --merge-existing: adding {key!r} "
+            f"({len(tables)} parsed table(s) under {parsed_dir})"
+        )
+        extra.append(key)
+
+    if not extra:
+        emit("[merge] --merge-existing: no other predictor has parsed tables here")
+        return list(requested)
+
+    widened = list(requested) + extra
+    emit(
+        f"[merge] --merge-existing: merging {len(widened)} predictor(s): "
+        f"{', '.join(widened)}"
+    )
+    return widened
 
 
 def _merge_protein(

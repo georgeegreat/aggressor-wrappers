@@ -1,49 +1,112 @@
-fix(net): a redirected POST must stay a POST
+feat(batch): reuse predictor output that already exists
 
-Three predictors failed in ways that read as outages and were not. Two of them
-have the same cause.
+A directory of perfectly good TANGO output could not be read. Four gates stood
+between raw files on disk and a merged table, and each was reasonable on its own.
 
-urllib does not follow 307 or 308 after a POST. Its redirect_request accepts
-those codes for GET and HEAD only and raises otherwise, so a service that has
-moved and says so in the way the specification provides for comes back as
-"HTTP Error 307: Temporary Redirect". WALTZ answers exactly this. Nothing about
-it is transient, so the retry layer could only turn one failure into several.
+TANGO had a runner and a profile parser but no parser CLASS and no registry
+entry. The scheduler's parse-only path and --skip-run both go through
+get_parser(), and _merge_protein drops any predictor list_parsers() does not
+know -- with a warning, since AmyloGram taught that lesson, but dropped all the
+same. TangoParser closes that: the profile logic in predictors/tango.py was
+always there, it simply had no way in. SCORE_COLUMNS is ('Aggregation',
+'Conc-Stab_Aggregation'); Beta is deliberately not selectable, because a
+beta-propensity column thresholded at TANGO's 5 % aggregation convention would
+be a different prediction wearing the same name.
 
-The sibling case is quieter. urllib converts a 301 or 302 after a POST into a
-GET, which is settled browser behaviour and is usually right. It is wrong when
-the redirect is a bare scheme upgrade -- the same host and path, http moved to
-https -- because the body is dropped and the service answers whatever an empty
-GET produces. PASTA returns its policy page, and the runner reported "PASTA
-submission did not return a job URL: .../policy.html", which names the symptom
-and hides the cause.
+--skip-run then searched exactly one directory, {PREDICTOR}/work/batch_N. The
+batch index comes from the configured chunk size, not from the user, so filing
+imported output correctly meant predicting it. The predictor directory itself is
+now a drop zone, searched after work/ and MERGED with it rather than losing to
+it: a panel is often part-local and part-imported, and the first non-empty hit
+used to win outright, so three files left behind by an aborted run would hide
+the four obtained elsewhere. The --save-raw-files archive remains the third
+place looked at, and the error naming all three now also says where to put files
+rather than only where it looked.
 
-_MethodPreservingRedirect repeats the request, method and body intact, for 307
-and 308 always, and for 301 and 302 only when nothing but the scheme changed.
-Every other redirect keeps urllib's behaviour: altering 301 and 302 in general
-would change how every runner handles redirects nobody has looked at, which is
-a larger claim than this evidence supports. Host and Content-Length are dropped
-from the carried headers, since both describe the request that was answered and
-urllib recomputes them.
+Then the executable was required anyway. backend = local resolves the class
+through select_backend, which raises BackendUnavailable when the tool is missing
+-- at construction, before any file is looked at. For TANGO this made --skip-run
+unreachable for precisely the case it exists for: the distributed build is a
+Linux x86_64 ELF, so on an arm64 Mac the binary can never execute and its output
+can only ever arrive from another machine. get_runner takes parse_only, which
+the pipeline sets from skip_run and which tolerates a missing tool. The declared
+policy still picks the class, because it is what says which FORMAT to expect:
+output from a local binary or JAR is not shaped like output from the same tool's
+web service.
 
-The opener is built once. build_opener installs the whole default handler set,
-and a fresh opener per request would mean a fresh connection pool each time.
+The fourth gate was the merge. It took the predictors named in this invocation,
+so adding one tool to a tree that already held eight meant re-running all nine
+or overwriting eight-tool merged tables with a one-tool table -- and re-running
+is not always available, since several runners clean work/ behind them.
+--merge-existing widens the merge step alone: every registered predictor with
+parsed tables in this output tree enters the merged table, each one named in the
+log. A merged table is the denominator of every consensus tier computed from it,
+so a panel that changes width silently is the worst outcome available here;
+naming them costs nine lines. Requested predictors keep their order and stay
+first, so column order does not shuffle between runs.
 
-Four tests, against a local server that issues the redirects. One of them pins
-the plain-urlopen behaviour being worked around, so that if urllib ever follows
-307 itself the fix is not left looking like a workaround for something that no
-longer happens. The scheme-upgrade predicate is tested on the cases that must
-NOT match -- a changed path, a changed host, no upgrade at all -- because a
-predicate that is too generous here silently re-POSTs to somewhere else.
+Widening by registry key merged one file twice. archcandy and archcandy2 are two
+parsers -- 1.x cumulative and 2.0, different published cutoffs -- writing and
+reading the same {id}_ArchCandy.csv, and the merge refused the whole batch with
+"Duplicate predictor in merge input" after every tool had been parsed. The
+widening deduplicates by tag, prefers the canonical key, and says so when a tag
+is ambiguous instead of resolving it quietly: the file does not record which
+version wrote it.
 
-[runners.amylodeep] gains two settings, for a failure with no network in it.
-The runner's 1800-second default is a web-service figure; AmyloDeep embeds
-every window with ESM2 on the CPU, so a 505-sequence batch of ~650-residue
-proteins is hundreds of thousands of forward passes. It was killed mid-run and
-the batch was lost entire, because sequences_per_run was unset and the whole
-input went as one batch with no resume point. 7200 seconds per batch and 25
-sequences to a batch: the model now loads more than once, and an interruption
-costs one batch instead of all of them.
+A partial batch no longer raises KeyError. _parse_and_write_runner_batch indexed
+raw_map for every protein in the batch, which is safe on the run path (missing
+output is checked before parsing) and not on the skip-run path, where raw comes
+from wherever it happens to be. A drop zone short by one file produced
+KeyError('RPL27'), naming neither the predictor nor the directory that was
+short. The proteins with raw are parsed; the rest are named.
 
-FoldAmyloid is untouched. Its log shows one sequence per request and timeouts
-against the server, which is not a client defect, and raising concurrency
-against a service already timing out would be the wrong answer to it.
+Two defects in the amyloscope handoff, both found by exporting a real panel.
+
+Overlap resolution was applied to every annotation source. keep="best" is right
+for a scan -- Pfam reports KH_1 and KH_dom over the same residues, and drawing
+both stacks two boxes where the protein has one domain -- and wrong for a
+curated table, where nesting IS the annotation. RPS2's dsRNA-binding-like domain
+(96-167) sits inside its uS5 core (51-268) and RPL27's KOW domain (6-88) inside
+its C-terminal domain (52-136); keeping only the outer hit deleted both, and
+they are the only two rna_binding domains in the panel. Whether overlap is
+redundancy or structure is a property of where the annotation came from, so
+DomainSet carries its own policy, DEFAULT_KEEP maps each source to one, and
+--domain-overlaps overrides it.
+
+The exported config carried no primary_domain_category. amyloscope reads it to
+decide which category the enrichment test is directed at; absent, the test runs
+over every category with none nominated, which is a search wearing a
+hypothesis's clothes. --primary-domain-category and --hypothesis export the
+pre-declared claim, and a category no exported domain carries is refused before
+any track is written -- amyloscope checks it too, but only at run time, by which
+point the message cannot name the categories the annotation does carry. While
+there: the tools loop rebound `name`, the panel-name parameter, to each tool's
+name. Nothing read it after the loop, so nothing was wrong yet.
+
+Two fixes with no connection to the above.
+
+aggressor-parse accepted --threshold for every predictor and forwarded it for
+five. The mapping from the flag to each parser's keyword covered path, pasta,
+aggreprot, crossbeta and appnn; for the other eight the flag parsed, produced an
+empty kwargs dict, and the parser ran at its default. The resulting table is
+binarised at 5.0 while the command line says 10.0, and nothing in the file or
+the log distinguishes it from one binarised at 10.0. The mapping now covers
+every parser taking an overridable threshold, an invariant test checks each
+entry names a parameter that parser's __init__ really declares, and the
+predictors where the flag cannot work are refused with the reason: AGGRESCAN and
+FoldAmyloid accept a threshold that is inert while use_tool_flag is on, and
+WALTZ output arrives already binarised.
+
+core/net.py gains http_error_308. redirect_request is only consulted for a
+status urllib routes to it, and CPython gained
+HTTPRedirectHandler.http_error_308 in 3.11, so on 3.10 and earlier a 308 never
+reached the override added in the previous commit: it fell through to
+http_error_default and raised HTTPError 308. The alias binds the handler urllib
+itself would, so it is harmless where the attribute already exists.
+
+Validated against the seven-protein rms_last.faa panel on a machine with no
+TANGO binary at all: all seven files parse from the drop zone, lengths match the
+FASTA exactly, RPS2 gives APRs at 96-101, 126-131 and 213-219, --merge-existing
+rebuilds nine-predictor merged tables, and the export runs through amyloscope
+validate and amyloscope run with H1 stated over rna_binding and the nested
+domains counted. Twenty-three new tests; 495 pass, 7 skip.

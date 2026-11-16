@@ -89,7 +89,11 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config(args.config)
     sequence, protein_id = _resolve_sequence_and_id(args)
-    parser_kwargs = _parser_kwargs(args)
+    try:
+        parser_kwargs = _parser_kwargs(args)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     predictor = get_parser(args.predictor, config_path=args.config, **parser_kwargs)
 
     result = predictor.parse(
@@ -133,19 +137,58 @@ def _resolve_sequence_and_id(args: argparse.Namespace) -> tuple[str, str]:
     raise SystemExit("Error: provide --fasta or --sequence")
 
 
+# Each parser names its threshold differently, because each tool's threshold
+# means a different thing (a percentile, a free energy, a probability). A
+# predictor absent from this map does not take an overridable threshold, and
+# --threshold for one is REFUSED rather than dropped: the silent version
+# accepted the flag, ignored it, and wrote a table binarised at the default,
+# which is indistinguishable from a table binarised at the requested value.
+_THRESHOLD_KWARG = {
+    "path": "threshold_percentile",
+    "pasta": "energy_threshold",
+    "aggreprot": "aggregation_threshold",
+    "crossbeta": "confidence_threshold",
+    "appnn": "score_threshold",
+    "tango": "threshold",
+    "amylodeep": "threshold",
+    "amylogram": "threshold",
+    "archcandy": "threshold",
+    "archcandy2": "threshold",
+}
+
+# AGGRESCAN and FoldAmyloid DO accept a threshold, but it is inert while
+# use_tool_flag is on (their own Hot Spot / 'f' calls embed a window the export
+# does not record), and the flag is not settable from this CLI. WALTZ takes no
+# threshold at all.
+_THRESHOLD_UNAVAILABLE = {
+    "aggrescan": (
+        "AGGRESCAN binarises on its own Hot Spot calls, which embed its "
+        "calibrated threshold and a length-dependent window; set "
+        "use_tool_flag = false and threshold in [predictors.aggrescan] to "
+        "override both together"
+    ),
+    "foldamyloid": (
+        "FoldAmyloid binarises on its own 'f' marker; set use_tool_flag = "
+        "false and threshold in [predictors.foldamyloid] to override both "
+        "together"
+    ),
+    "waltz": "WALTZ output is already binarised by the server",
+}
+
+
 def _parser_kwargs(args: argparse.Namespace) -> dict:
     if args.threshold is None:
         return {}
 
-    mapping = {
-        "path": "threshold_percentile",
-        "pasta": "energy_threshold",
-        "aggreprot": "aggregation_threshold",
-        "crossbeta": "confidence_threshold",
-        "appnn": "score_threshold",
-    }
-    key = mapping.get(args.predictor)
-    return {key: args.threshold} if key else {}
+    key = _THRESHOLD_KWARG.get(args.predictor)
+    if key is None:
+        reason = _THRESHOLD_UNAVAILABLE.get(
+            args.predictor, "this predictor takes no overridable threshold"
+        )
+        raise ValueError(
+            f"--threshold is not available for {args.predictor!r}: {reason}"
+        )
+    return {key: args.threshold}
 
 
 if __name__ == "__main__":
@@ -161,16 +204,26 @@ predictors and raw inputs:
   aggreprot   AggreProt CSV export + FASTA
   archcandy   region CSV (Start, Stop, Score) + FASTA
   crossbeta   CRBM JSON (AA_list / mean_confidence) + FASTA
+  tango       TANGO per-residue table ({protein}.txt, columns res aa Beta
+              Turn Helix Aggregation Conc-Stab_Aggregation) + FASTA
+  amylogram   AmyloGram per-window CSV + FASTA
+  amylodeep   AmyloDeep per-residue CSV (residue_number) + FASTA
+  aggrescan   AGGRESCAN per-residue export + FASTA
+  foldamyloid FoldAmyloid profile with 'f' markers + FASTA
 
 examples:
   aggressor-parse path --results results.csv --fasta RPS2.fasta -o RPS2_PATH.csv
   aggressor-parse waltz --input WaltzJob.txt --fasta APP.fasta -o APP_waltz.csv
   aggressor-parse crossbeta --input result.json --fasta protein.fasta -o out.csv
+  aggressor-parse tango --input tango/RPS2.txt --fasta RPS2.fasta -o RPS2_tango.csv
 
   python -m aggressor_wrappers parse waltz --input WaltzJob.txt --fasta APP.fasta -o out.csv
 
 notes:
   --fasta or --sequence is required.
+  Reusing output obtained on another machine: this command takes one protein
+  and one tool. For a whole set, drop the raw files in {output}/{PREDICTOR}/
+  and run the pipeline with --skip-run, which parses and merges them.
   Raw inputs are cached only with --keep-cache (cache/ is removed by default after run).
   Thresholds default from config.cfg; override with --threshold.
 """

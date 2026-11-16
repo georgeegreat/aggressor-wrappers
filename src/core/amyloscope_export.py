@@ -36,6 +36,8 @@ from __future__ import annotations
 import warnings
 from pathlib import Path
 
+import re
+
 import pandas as pd
 
 from aggressor_wrappers.core.schema import PREDICTOR_REGISTRY, get_predictor_spec
@@ -140,6 +142,25 @@ def export_protein(
     return written
 
 
+def _wrap_block(text: str, width: int = 76) -> list[str]:
+    """Fold free text for a YAML block scalar, keeping paragraph breaks."""
+    import textwrap
+
+    out: list[str] = []
+    # A hyphen at the end of a hard-wrapped line belongs to the word, not to the
+    # break: collapsing whitespace naively turns "aggregation-\ncompetent" into
+    # "aggregation- competent".
+    text = re.sub(r"-\n(?=\w)", "-", text)
+    for paragraph in text.strip().split("\n\n"):
+        collapsed = " ".join(paragraph.split())
+        if not collapsed:
+            continue
+        if out:
+            out.append("")
+        out.extend(textwrap.wrap(collapsed, width=width) or [""])
+    return out or [""]
+
+
 def build_amyloscope_config(
     proteins: dict[str, dict],
     predictors: list[str],
@@ -148,6 +169,8 @@ def build_amyloscope_config(
     name: str = "aggressor-wrappers panel",
     min_region_length: int = 5,
     coverage_fraction: float = 0.5,
+    hypothesis: str | None = None,
+    primary_domain_category: str | None = None,
 ) -> Path:
     """Emit a ready-to-run amyloscope config for the exported tracks.
 
@@ -156,10 +179,23 @@ def build_amyloscope_config(
     upstream in this package. That keeps a single source of truth for each
     predictor's calling rule instead of restating PASTA's inverted cutoff in a
     second config file, where it could silently drift.
+
+    ``hypothesis`` and ``primary_domain_category`` are the PRE-DECLARED claim.
+    amyloscope reads the second to decide which domain category the enrichment
+    test is directed at; with it absent, that test becomes one of several
+    presented as though it were the only one, which is the difference between a
+    hypothesis and a search. They are exported because they belong to the panel
+    being built, not to the reader of the config.
     """
     lines: list[str] = []
     lines.append(f"name: {name}")
     lines.append(f"output_dir: {out_root / 'amyloscope_out'}")
+    if hypothesis:
+        lines.append("hypothesis: >")
+        for line in _wrap_block(hypothesis):
+            lines.append(f"  {line}")
+    if primary_domain_category:
+        lines.append(f"primary_domain_category: {primary_domain_category}")
     lines.append("")
     lines.append("proteins:")
     for pid, meta in proteins.items():
@@ -186,11 +222,11 @@ def build_amyloscope_config(
     lines.append("tools:")
     unmapped: list[str] = []
     for key in predictors:
-        name = AMYLOSCOPE_TOOL_NAMES.get(key, key)
-        if name is None:
+        tool_name = AMYLOSCOPE_TOOL_NAMES.get(key, key)
+        if tool_name is None:
             unmapped.append(key)
             continue
-        lines.append(f"  - name: {name}")
+        lines.append(f"  - name: {tool_name}")
         lines.append(f"    adapter: {NORMALISED_ADAPTER}")
         lines.append(f"    path: {out_root / 'tracks' / key}/{{protein}}.csv")
         lines.append(
@@ -261,6 +297,8 @@ def export_run(
     sequences: dict[str, str] | None = None,
     name: str = "aggressor-wrappers panel",
     domains=None,
+    hypothesis: str | None = None,
+    primary_domain_category: str | None = None,
 ) -> Path:
     """Export a whole batch run (``<output>/merged/*.csv``) for amyloscope."""
     merged_dir = Path(merged_dir)
@@ -303,7 +341,39 @@ def export_run(
         proteins[pid] = meta
 
     ordered = [k for k in PREDICTOR_REGISTRY if k in predictors]
-    config = build_amyloscope_config(proteins, ordered, out_root, name=name)
+
+    # amyloscope refuses a primary category that no domain uses, but only once
+    # the run starts, with a message that cannot name the categories the
+    # annotation actually carries. This is the library-level guard; the CLI makes
+    # the same check from the DomainSet before any track is written.
+    if primary_domain_category:
+        present = {
+            domain["category"]
+            for meta in proteins.values()
+            for domain in (meta.get("domains") or [])
+        }
+        if present and primary_domain_category not in present:
+            raise ValueError(
+                f"primary_domain_category {primary_domain_category!r} is not a "
+                f"category any exported domain carries. Present: "
+                f"{', '.join(sorted(present))}. amyloscope refuses this at run "
+                f"time, so the panel would be unusable."
+            )
+        if not present:
+            raise ValueError(
+                f"primary_domain_category {primary_domain_category!r} was given "
+                f"but no domain was exported -- pass --domains, or drop the "
+                f"category."
+            )
+
+    config = build_amyloscope_config(
+        proteins,
+        ordered,
+        out_root,
+        name=name,
+        hypothesis=hypothesis,
+        primary_domain_category=primary_domain_category,
+    )
     verify_export(out_root, ordered, proteins, config=config)
     return config
 

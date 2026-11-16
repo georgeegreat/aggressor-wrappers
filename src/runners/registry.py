@@ -29,7 +29,11 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-from aggressor_wrappers.core.backend import LocalTool, select_backend
+from aggressor_wrappers.core.backend import (
+    BackendUnavailable,
+    LocalTool,
+    select_backend,
+)
 from aggressor_wrappers.core.config import load_config, predictor_options, runner_options
 from aggressor_wrappers.core.schema import resolve_predictor_key
 from aggressor_wrappers.runners.aggreprot import AggreProtRunner
@@ -221,8 +225,14 @@ def get_runner(
     name: str,
     *,
     config_path: str | None = None,
+    parse_only: bool = False,
     **overrides: Any,
 ) -> BasePredictorRunner:
+    """Construct the runner for ``name``.
+
+    ``parse_only`` says the caller will only read raw output that already
+    exists, so the executable is not required. See :func:`_resolve_class`.
+    """
     key = resolve_predictor_key(name)
     if key not in RUNNER_REGISTRY:
         raise KeyError(f"No runner registered for {name!r}. Known: {sorted(RUNNER_REGISTRY)}")
@@ -281,7 +291,7 @@ def get_runner(
         )
     options.update(overrides)
 
-    cls = _resolve_class(key, options)
+    cls = _resolve_class(key, options, parse_only=parse_only)
     options = _apply_backend_specific_options(key, cls, options)
     return _construct(cls, options, key=key)
 
@@ -312,19 +322,40 @@ def _apply_backend_specific_options(
     return options
 
 
-def _resolve_class(key: str, options: dict[str, Any]) -> type:
-    """Pick the web or local implementation for ``key`` per the backend policy."""
+def _resolve_class(
+    key: str, options: dict[str, Any], *, parse_only: bool = False
+) -> type:
+    """Pick the web or local implementation for ``key`` per the backend policy.
+
+    ``parse_only`` is set when the caller will only READ raw output that
+    already exists (``--skip-run``). Parsing needs the runner's knowledge of
+    the output FORMAT, not its executable, so a missing tool must not refuse
+    the construction -- it did, and that made --skip-run unreachable for
+    precisely the tool it exists for: TANGO ships a Linux x86_64 ELF, so on an
+    arm64 Mac the binary can never run, its output can only ever be obtained
+    elsewhere, and ``backend = local`` then failed at construction with
+    "the local tool was not found" before any file was looked at.
+
+    The declared policy still picks the class, because it is what says which
+    format to expect: output produced by the JAR or the binary is not shaped
+    like output from the same tool's web service.
+    """
     spec = _BACKENDS.get(key)
     if spec is None:
         return RUNNER_REGISTRY[key]
     web_cls, local_cls, tool_factory = spec
     local_tool = tool_factory(options) if (tool_factory and local_cls) else None
-    resolved, _local_path, _reason = select_backend(
-        key,
-        local_tool=local_tool,
-        options=options,
-        has_web=web_cls is not None,
-    )
+    try:
+        resolved, _local_path, _reason = select_backend(
+            key,
+            local_tool=local_tool,
+            options=options,
+            has_web=web_cls is not None,
+        )
+    except BackendUnavailable:
+        if not parse_only:
+            raise
+        resolved = "local" if local_cls is not None else "web"
     if resolved == "local":
         if local_cls is None:
             raise RuntimeError(f"{key}: no local implementation is registered")

@@ -75,8 +75,21 @@ def build_parser(*, prog: str = "aggressor-wrappers") -> argparse.ArgumentParser
         "--skip-run",
         action="store_true",
         help=(
-            "Do not execute external tools; parse existing raw from "
-            "{PREDICTOR}/work/ or --save-raw-files archive"
+            "Do not execute external tools; parse raw output already on disk. "
+            "Searched, and merged, in this order: {PREDICTOR}/work/batch_N/, "
+            "then {PREDICTOR}/ itself (the drop zone -- put output obtained on "
+            "another machine here), then the --save-raw-files archive"
+        ),
+    )
+    parser.add_argument(
+        "--merge-existing",
+        action="store_true",
+        help=(
+            "At the merge step, also include every predictor that already has "
+            "parsed tables under {PREDICTOR}/parsed/ in this output directory, "
+            "not only the ones named by --predictors. Use it to fold one more "
+            "tool into a finished panel without re-running the others; the "
+            "predictors it adds are listed in the log"
         ),
     )
     parser.add_argument(
@@ -116,6 +129,7 @@ def run_pipeline(argv: list[str] | None, *, prog: str = "aggressor-wrappers") ->
                 resume=not args.no_resume,
                 save_raw_files=args.save_raw_files,
                 keep_cache=args.keep_cache,
+                merge_existing=args.merge_existing,
                 log=emit,
             )
             emit(f"Finished {len(merged)} protein(s). Merged tables:")

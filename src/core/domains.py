@@ -38,7 +38,16 @@ from pathlib import Path
 #: Deliberately small: the categories exist to colour a figure consistently across
 #: protein families, not to re-describe Pfam's hierarchy.
 CATEGORY_PATTERNS: tuple[tuple[str, str], ...] = (
-    # Nucleic-acid binding
+    # Nucleic-acid binding. The spelled-out phrases come first by length, which
+    # is what makes them useful: InterPro names say what a domain binds in
+    # words ("uS15/NS1, RNA-binding domain superfamily") far more often than
+    # they carry a family token, and without these such a domain fell through to
+    # "default" -- so a --primary-domain-category of rna_binding then missed the
+    # very domain it was declared for.
+    ("rna-binding", "rna_binding"),
+    ("rna binding", "rna_binding"),
+    ("dna-binding", "dna_binding"),
+    ("dna binding", "dna_binding"),
     ("kh", "rna_binding"),
     ("rrm", "rna_binding"),
     ("dsrm", "rna_binding"),
@@ -262,6 +271,13 @@ READERS = {
     "table": read_domain_tsv,
 }
 
+#: Default overlap policy implied by each source. See ``DomainSet.keep``.
+DEFAULT_KEEP = {
+    "hmmscan": "best",
+    "interproscan": "best",
+    "table": "all",
+}
+
 
 def detect_format(path: str | Path) -> str:
     """Identify which reader a file needs, from its own content."""
@@ -335,9 +351,23 @@ class DomainSet:
 
     by_protein: dict[str, list[DomainHit]] = field(default_factory=dict)
     source: str = "unknown"
+    #: How overlapping hits on one protein are reduced. Whether overlap is
+    #: REDUNDANCY or STRUCTURE is a property of where the annotation came from,
+    #: not of the geometry: a scan reports several models for one region (KH_1
+    #: and KH_dom over the same residues) and drawing both stacks two boxes
+    #: where the protein has one domain, while a curated table nests domains
+    #: deliberately -- an RNA-binding domain inside a structured core is two
+    #: facts about those residues, and dropping the inner one because it
+    #: overlaps deletes the annotation a hypothesis about RNA-binding domains
+    #: is tested against. So "best" is right for a scan and "all" for a table.
+    keep: str = "best"
 
     def for_protein(
-        self, protein_id: str, *, sequence_length: int | None = None, keep: str = "best"
+        self,
+        protein_id: str,
+        *,
+        sequence_length: int | None = None,
+        keep: str | None = None,
     ) -> list[DomainHit]:
         """Drawable domains for one protein, clipped to its own length.
 
@@ -345,11 +375,17 @@ class DomainSet:
         not the same protein -- a stale scan, or an isoform. It is DROPPED rather
         than clipped, because silently shortening a domain to fit produces a
         plausible-looking box in the wrong place.
+
+        ``keep`` overrides this set's own policy for one call.
         """
         hits = self.by_protein.get(protein_id, [])
         if sequence_length is not None:
             hits = [h for h in hits if h.stop <= sequence_length]
-        return resolve_overlaps(hits, keep=keep)
+        return resolve_overlaps(hits, keep=keep or self.keep)
+
+    def categories(self) -> set[str]:
+        """Every category this annotation uses, for validating a primary claim."""
+        return {hit.category for hits in self.by_protein.values() for hit in hits}
 
     def coverage(self) -> dict[str, int]:
         """How many proteins have at least one domain, and how many hits in all."""

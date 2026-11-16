@@ -15,6 +15,7 @@ from aggressor_wrappers.predictors.archcandy import ArchCandyParser
 from aggressor_wrappers.predictors.archcandy_v2 import ArchCandy2Parser
 from aggressor_wrappers.predictors.base import BasePredictorParser
 from aggressor_wrappers.predictors.crossbeta import CrossBetaParser
+from aggressor_wrappers.predictors.tango import TangoParser
 from aggressor_wrappers.predictors.foldamyloid import FoldAmyloidParser
 from aggressor_wrappers.predictors.pasta import PASTAParser
 from aggressor_wrappers.predictors.path import PATHParser
@@ -29,6 +30,10 @@ PARSER_REGISTRY: dict[str, type[BasePredictorParser]] = {
     "archcandy": ArchCandyParser,
     "archcandy2": ArchCandy2Parser,
     "crossbeta": CrossBetaParser,
+    # TANGO has a runner AND a parser now: the parser is what lets output
+    # obtained on another machine be reused, which matters because the
+    # distributed Linux binary cannot execute on macOS at all.
+    "tango": TangoParser,
     "foldamyloid": FoldAmyloidParser,
     "aggrescan": AggrescanParser,
     # AmyloGram's projection module and runner both predate this entry; without

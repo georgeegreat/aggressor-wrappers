@@ -163,6 +163,15 @@ class _MethodPreservingRedirect(urllib.request.HTTPRedirectHandler):
     would alter how every runner behaves on redirects nobody has examined.
     """
 
+    # redirect_request is only consulted for a status urllib ROUTES to it, and
+    # CPython gained HTTPRedirectHandler.http_error_308 in 3.11. On 3.10 and
+    # earlier a 308 therefore never reaches the override below: it falls through to
+    # http_error_default and raises HTTPError 308, so a service that answers a POST
+    # with a permanent redirect fails instead of being followed. The alias routes
+    # it, and is harmless where the attribute already exists because it binds the
+    # same handler urllib would.
+    http_error_308 = urllib.request.HTTPRedirectHandler.http_error_301
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         method = req.get_method()
         repeat = code in (307, 308) or (

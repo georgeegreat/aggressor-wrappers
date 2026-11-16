@@ -417,15 +417,48 @@ sequences_per_run = 1
 | `--predictors`     | Comma-separated list (default from `[pipeline]` in config.cfg)            |
 | `--save-raw-files` | Archive raw tool outputs per protein (enables `--skip-run` after cleanup) |
 | `--keep-cache`     | Keep `cache/` after run (default: removed)                                |
-| `--skip-run`       | Parse only; read raw from `{PREDICTOR}/work/` or `--save-raw-files`       |
+| `--skip-run`       | Parse only; read raw from `{PREDICTOR}/work/batch_N/`, the drop zone `{PREDICTOR}/`, or `--save-raw-files` |
+| `--merge-existing` | At the merge step, also include predictors that already have `parsed/` tables here |
 | `--no-resume`      | Re-run all predictors even when valid `parsed/` CSVs already exist        |
 
 On repeat runs into the same `-o` directory, the pipeline **resumes by default**:
 for each predictor it checks `{PREDICTOR}/parsed/{id}_*.csv` against the input
 FASTA (row count and `aa_name` sequence). Valid outputs are reused; missing or
 stale files are re-computed. Use `--no-resume` to force a full re-run.
-Resume is disabled with `--skip-run` (that mode always re-parses from raw `work/`
+Resume is disabled with `--skip-run` (that mode always re-parses from raw
 files). Progress lines are tee'd to `{output_dir_name}.log` in append mode.
+
+### Reusing output obtained on another machine
+
+Raw output a tool produced somewhere else — on a cluster, or on a machine whose
+architecture the binary actually runs on — goes in the **drop zone**: the
+predictor's own directory, `{output}/{PREDICTOR}/`, named as that runner's
+`discover_outputs` expects (`{protein_id}.txt` for TANGO). `--skip-run` searches
+`{PREDICTOR}/work/batch_N/` first, then the drop zone, then the
+`--save-raw-files` archive, and **merges** what it finds rather than taking the
+first non-empty hit: a panel that is part-local and part-imported works.
+
+`--skip-run` does not require the tool to be installed. TANGO ships a Linux
+x86_64 ELF, so on an arm64 Mac the binary can never execute and its output can
+only ever arrive this way; `backend = local` no longer refuses at construction
+when the file is absent. The declared backend still chooses the parser, because
+it is what says which output format to expect.
+
+Adding one tool to a panel that has already run:
+
+```bash
+# TANGO output from elsewhere, dropped in output_dir/tango/{RPS2,RPS28,...}.txt
+aggressor-wrappers rms_last.faa -o output_dir --predictors tango \
+  --skip-run --merge-existing
+```
+
+`--merge-existing` widens the **merge step only**: every registered predictor
+with parsed tables under `{PREDICTOR}/parsed/` in that output directory enters
+the merged table, each one named in the log. Without it, `--predictors tango`
+rebuilds `merged/` from TANGO alone and the other eight columns are lost. The
+widening deduplicates by output tag, so `{id}_ArchCandy.csv` — shared by the
+`archcandy` and `archcandy2` parsers — is never merged twice; when a tag is
+ambiguous the choice is stated in the log.
 
 
 **Smoke test** (3 short proteins; PATH is slow, web predictors add network time — ArchCandy ~4 s/protein):
@@ -475,6 +508,69 @@ aggressor-widemerge --input-dir parsed/ -o merged.csv --check-bht-reference \
 
 
 Also available as `python -m aggressor_wrappers widemerge …`.
+
+
+### `aggressor-export-amyloscope`
+
+Turns a batch run's merged tables into an amyloscope run directory: one
+normalised track per predictor per protein, plus a `config.yaml` that is ready
+for `amyloscope run`.
+
+```bash
+aggressor-export-amyloscope output_dir/merged -o amyloscope_run/ \
+    --fasta rms_last.faa \
+    --domains domains.tsv \
+    --primary-domain-category rna_binding \
+    --hypothesis @hypothesis.txt \
+    --clean --name "RPs panel"
+
+amyloscope validate amyloscope_run/config.yaml
+amyloscope run      amyloscope_run/config.yaml
+```
+
+Every tool is declared with the same `flag`-on-`APR` detection rule: each
+parser already binarised with its tool's own cut **and direction**, so the APR
+column is scale-free and polarity-correct and PASTA's inverted cutoff is not
+restated in a second config file where it could drift. The config is written
+with `adapter: aggressor` throughout, which is the adapter amyloscope uses for
+these normalised tracks — not the per-tool adapters a hand-written config needs.
+
+
+| Flag                         | Purpose                                                               |
+| ---------------------------- | --------------------------------------------------------------------- |
+| `--fasta`                    | The multifasta the run used; otherwise sequences come from `aa_name`  |
+| `--domains`                  | hmmscan `--domtblout`, an InterProScan TSV, or a `protein_id, name, start, stop[, category]` table. **Repeatable** |
+| `--domain-format`            | Override format detection                                             |
+| `--domain-overlaps`          | `auto` (default), `best` or `all` — see below                         |
+| `--primary-domain-category`  | The category the enrichment test is directed at, e.g. `rna_binding`   |
+| `--hypothesis`               | Free text, or `@FILE`, surfaced in amyloscope's statistics report      |
+| `--clean`                    | Remove an existing `tracks/` first                                     |
+| `--name`                     | Panel name recorded in the config                                     |
+
+**Domains are per species.** Annotations are used in each orthologue's own
+numbering and never projected from a reference, so run the scan on the same
+multifasta the panel ran on. A hit past the end of a sequence is dropped, not
+clipped: it means the annotation and the sequence are different proteins.
+
+`--domains` can be given more than once, so a curated table and a scan covering
+the proteins it does not reach combine without editing either file — the formats
+differ and their headers would not survive `cat`. Mixed formats keep every
+overlapping domain, because one policy cannot be right for both; pass
+`--domain-overlaps` to force one.
+
+**Overlap policy follows the source.** `auto` keeps every domain from a
+hand-written table, because nesting in a curated set is the annotation — an
+RNA-binding domain inside a structured core is two facts about those residues —
+and keeps the best hit per overlapping group from a scan, because several Pfam
+models over one region are redundancy. Forcing `best` on a curated table deletes
+the inner domains, which for a hypothesis about RNA-binding domains deletes the
+hypothesis.
+
+**The claim is pre-declared.** `--primary-domain-category` is what makes the
+enrichment test directional; without it amyloscope runs the test over every
+category with none nominated, which is a search rather than a hypothesis. The
+category must be one the annotation actually uses, and the export refuses it
+before writing anything if it is not.
 
 ---
 

@@ -36,6 +36,13 @@ from pathlib import Path
 
 import pandas as pd
 
+from aggressor_wrappers.core.schema import (
+    PredictorResult,
+    binary_from_scores,
+    get_predictor_spec,
+)
+from aggressor_wrappers.predictors.base import BasePredictorParser
+
 SCORE_COLUMNS = ("Aggregation", "Conc-Stab_Aggregation")
 AUX_COLUMNS = ("Beta", "Turn", "Helix", "Conc-Stab_Aggregation")
 _EXPECTED = ("res", "aa", "Beta", "Turn", "Helix", "Aggregation")
@@ -95,3 +102,77 @@ def tango_profile(
         "max_aggregation": float(df["Aggregation"].max()),
     }
     return scores, aux, meta
+
+
+class TangoParser(BasePredictorParser):
+    """Read a TANGO table that already exists, without re-running TANGO.
+
+    The profile logic was here all along, used by the runner after it invoked the
+    binary. What was missing is this class and its registry entry, and the absence
+    had a specific consequence: the scheduler's parse-only path and ``--skip-run``
+    both go through ``get_parser()``, so a directory full of perfectly good TANGO
+    output could not be read without the binary that produced it. On a machine
+    where that binary will not execute at all -- a Linux ELF build on macOS, say --
+    output obtained elsewhere was unusable.
+
+    ``tango_profile`` refuses a file whose ``aa`` column contradicts the configured
+    sequence, so a table from a different protein cannot be aligned onto this one.
+    That check is the reason reusing a file is safe: the identity of the protein is
+    verified from the file's own residue letters rather than assumed from its name.
+
+    ``score_column`` selects which TANGO column becomes the profile, and the choice
+    is restricted to the two aggregation columns by ``SCORE_COLUMNS``. ``Beta`` is
+    deliberately not among them: beta-propensity is a different quantity from
+    aggregation, on its own scale, and offering it here would invite a panel in
+    which one tool's column means something else than the threshold assumes.
+    ``Aggregation`` is the default with TANGO's conventional 5 % cut;
+    ``Conc-Stab_Aggregation`` is the concentration-stabilised variant, and the two
+    must be recorded distinctly because they are not interchangeable.
+    """
+
+    spec = get_predictor_spec("tango")
+
+    def __init__(
+        self,
+        threshold: float = 5.0,
+        score_column: str = "Aggregation",
+    ) -> None:
+        if score_column not in SCORE_COLUMNS:
+            raise ValueError(f"score_column must be one of {SCORE_COLUMNS}")
+        self.threshold = float(threshold)
+        self.score_column = score_column
+
+    def parse(
+        self,
+        source: str | Path,
+        *,
+        protein_id: str,
+        sequence: str,
+        **kwargs,
+    ) -> PredictorResult:
+        scores, aux, meta = tango_profile(
+            source, sequence, score_column=self.score_column
+        )
+        if len(scores) != len(sequence):
+            raise ValueError(
+                f"{source}: TANGO reports {len(scores)} residues for a "
+                f"{len(sequence)}-residue sequence ({protein_id}). The file and the "
+                f"FASTA are different proteins."
+            )
+        meta.update(
+            {
+                "threshold": self.threshold,
+                "score_column": self.score_column,
+                "binarised_from": "score_threshold",
+                "reused_existing_output": True,
+            }
+        )
+        return PredictorResult(
+            protein_id=protein_id,
+            sequence=sequence,
+            spec=self.spec,
+            scores=scores,
+            binary=binary_from_scores(scores, threshold=self.threshold),
+            metadata=meta,
+            aux=aux,
+        )

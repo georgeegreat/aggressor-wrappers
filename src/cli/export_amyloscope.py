@@ -58,20 +58,34 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--domains", type=Path,
+        "--domains", type=Path, action="append", metavar="FILE",
         help=(
             "Per-species domain annotation for the orthologues: hmmscan "
             "--domtblout, an InterProScan TSV, or a table with protein_id, name, "
-            "start, stop[, category]. The format is detected from the file. "
-            "Annotations are used in each orthologue's OWN numbering and are never "
-            "projected from a reference, so run the scan on the same multifasta the "
-            "panel ran on:\n"
+            "start, stop[, category]. The format is detected per file. Repeatable, "
+            "so a curated table and a scan covering the proteins it does not reach "
+            "can be combined without editing either -- the formats differ and their "
+            "headers would not survive being concatenated. Annotations are used in "
+            "each orthologue's OWN numbering and are never projected from a "
+            "reference, so run the scan on the same multifasta the panel ran on:\n"
             "  hmmscan --domtblout domains.tbl --cut_ga Pfam-A.hmm proteins.faa"
         ),
     )
     parser.add_argument(
         "--domain-format", choices=["hmmscan", "interproscan", "table"],
-        help="Override format detection for --domains.",
+        help="Override format detection for every --domains file.",
+    )
+    parser.add_argument(
+        "--domain-overlaps",
+        choices=("auto", "best", "all"),
+        default="auto",
+        help=(
+            "How overlapping domains on one protein are reduced. 'auto' (default) "
+            "follows the source: a hand-written table keeps every domain, because "
+            "nesting in a curated set is deliberate, while a scan keeps the best "
+            "hit per overlapping group, because several Pfam models over one "
+            "region are redundancy. 'best' or 'all' forces one policy"
+        ),
     )
     parser.add_argument(
         "--clean", action="store_true",
@@ -80,6 +94,24 @@ def build_parser() -> argparse.ArgumentParser:
             "adds to whatever is there, so tracks from an earlier export -- written "
             "by an older version, with different columns -- mix with the new ones "
             "and fail inside amyloscope rather than here."
+        ),
+    )
+    parser.add_argument(
+        "--primary-domain-category",
+        help=(
+            "The domain category the enrichment test is directed at, e.g. "
+            "rna_binding. amyloscope reads it as the PRE-DECLARED claim; "
+            "without it the enrichment test is one of several run over every "
+            "category, which is a search rather than a hypothesis. It must be a "
+            "category the --domains annotation actually uses"
+        ),
+    )
+    parser.add_argument(
+        "--hypothesis",
+        help=(
+            "Free text surfaced in amyloscope's statistics report, or @FILE to "
+            "read it from a file. State the directional claim the primary "
+            "category operationalises"
         ),
     )
     parser.add_argument(
@@ -139,38 +171,115 @@ def main(argv: list[str] | None = None) -> int:
 
     domain_set = None
     if args.domains:
-        from aggressor_wrappers.core.domains import DomainSet, load_domains
+        from aggressor_wrappers.core.domains import (
+            DEFAULT_KEEP,
+            DomainSet,
+            detect_format,
+            load_domains,
+        )
 
-        if not args.domains.is_file():
-            print(f"Error: domain file not found: {args.domains}", file=sys.stderr)
-            return 2
-        try:
-            by_protein = load_domains(args.domains, fmt=args.domain_format)
-        except ValueError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return 2
-        domain_set = DomainSet(by_protein=by_protein, source=str(args.domains))
+        merged_hits: dict[str, list] = {}
+        formats: list[str] = []
+        for path in args.domains:
+            if not path.is_file():
+                print(f"Error: domain file not found: {path}", file=sys.stderr)
+                return 2
+            try:
+                by_protein = load_domains(path, fmt=args.domain_format)
+                fmt = args.domain_format or detect_format(path)
+            except ValueError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 2
+            formats.append(fmt)
+            hits_here = sum(len(v) for v in by_protein.values())
+            print(
+                f"Domains: {hits_here} hit(s) over {len(by_protein)} protein(s) "
+                f"from {path} ({fmt})",
+                file=sys.stderr,
+            )
+            for protein_id, hits in by_protein.items():
+                merged_hits.setdefault(protein_id, []).extend(hits)
+
+        # The overlap policy is a property of the source, so a mixed set has no
+        # single right answer: a scan's redundancy would be kept to preserve a
+        # table's nesting. Mixed sources therefore keep everything and say so --
+        # the alternative is dropping curated domains to tidy a scan.
+        sources = sorted(set(formats))
+        if args.domain_overlaps != "auto":
+            keep = args.domain_overlaps
+        elif len(sources) == 1:
+            keep = DEFAULT_KEEP.get(sources[0], "best")
+        else:
+            keep = "all"
+            print(
+                f"Domains: {len(args.domains)} files of differing formats "
+                f"({', '.join(sources)}); keeping every overlapping domain, since "
+                f"one policy cannot be right for both. Pass --domain-overlaps to "
+                f"force one.",
+                file=sys.stderr,
+            )
+
+        domain_set = DomainSet(
+            by_protein=merged_hits,
+            source=", ".join(str(p) for p in args.domains),
+            keep=keep,
+        )
         counts = domain_set.coverage()
         print(
             f"Domains: {counts['total_hits']} hit(s) over "
-            f"{counts['proteins_with_domains']} protein(s) from {args.domains}",
+            f"{counts['proteins_with_domains']} protein(s) in all "
+            f"(overlapping domains: keep {keep})",
             file=sys.stderr,
         )
         if counts["proteins_with_domains"] == 0:
             print(
-                "Warning: no protein in the domain file matched. The ids must be the "
-                "FASTA headers the panel ran on -- an EggNOG set is keyed "
+                "Warning: no protein in the domain file(s) matched. The ids must be "
+                "the FASTA headers the panel ran on -- an EggNOG set is keyed "
                 "taxid.proteinid, and a scan run on re-headered sequences will not "
                 "line up.",
                 file=sys.stderr,
             )
 
+    # Checked here, from the DomainSet, so a mistyped category costs nothing:
+    # export_run writes every track before it could notice.
+    if args.primary_domain_category:
+        if domain_set is None:
+            print(
+                "Error: --primary-domain-category needs --domains: the category "
+                "has to be one the annotation uses.",
+                file=sys.stderr,
+            )
+            return 2
+        present = domain_set.categories()
+        if args.primary_domain_category not in present:
+            print(
+                f"Error: --primary-domain-category "
+                f"{args.primary_domain_category!r} is not a category "
+                f"{', '.join(str(p) for p in args.domains)} uses. "
+                f"Present: {', '.join(sorted(present))}",
+                file=sys.stderr,
+            )
+            return 2
+
+    hypothesis = args.hypothesis
+    if hypothesis and hypothesis.startswith("@"):
+        hypothesis_path = Path(hypothesis[1:])
+        if not hypothesis_path.is_file():
+            print(f"Error: hypothesis file not found: {hypothesis_path}", file=sys.stderr)
+            return 2
+        hypothesis = hypothesis_path.read_text(encoding="utf-8")
+
     try:
         config = export_run(
             merged_dir, args.output, sequences=sequences, name=args.name,
             domains=domain_set,
+            hypothesis=hypothesis,
+            primary_domain_category=args.primary_domain_category,
         )
     except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     except ValueError as exc:
