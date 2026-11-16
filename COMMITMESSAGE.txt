@@ -1,55 +1,48 @@
-feat(coverage): a prediction over part of a sequence is a prediction about that part
+fix(export): declare PATH, and let a gap be a gap
 
-Both of this project's RPS12 files cover residues 10-129 of a 132-residue
-chain. Refused, the protein lost two predictors from its panel. Accepted at
-face value, each file aligns at residue 1 and every call lands nine residues
-early -- a complete, plausible, wrong answer that nothing downstream could
-detect. Neither is the right answer.
+Two failures on one export, both of them this package telling amyloscope
+something that stopped being true.
 
-A short file is now accepted when its placement can be ESTABLISHED, and the
-residues outside it are marked not predicted rather than predicted-negative.
-Those are different claims: a zero says the tool looked and found nothing, and
-collapsing the two inflates every denominator computed from the track. The
-marker is NaN, which survives the parsed CSV as a blank cell, the merged table,
-and the amyloscope export, so nothing in the chain needed a new column.
+AMYLOSCOPE_TOOL_NAMES still mapped path to None, with a comment explaining that
+amyloscope has no adapter and no mechanism family for it. It has both now. The
+consequence was the worst-shaped one available: export_protein wrote PATH's
+seven tracks to disk, build_amyloscope_config left the tool out of the config
+that declares them, and the warning said the tracks "remain on disk under
+tracks/" -- so the data was present, visible, and not in the panel. A fractional
+consensus counts what it loads.
 
-Placement is established two ways and guessed neither.
+The mapping is a hand-written mirror of amyloscope's adapter registry and will
+drift again; what it now has is a test pinning path, and a companion test that
+pins the skip mechanism against a deliberately unmapped predictor rather than
+against whichever one happens to be unsupported today. Nothing maps to None any
+more, and the old test asserted exactly that it did.
 
-FoldAmyloid reports residue identities, so it places itself: the observed
-string is matched against the sequence and accepted only if it occurs at
-exactly one offset. Several means the sequence repeats and the file cannot be
-placed; none means it is not this protein's, which is the mis-filed case the
-identity check already caught and whose wording is kept, since that is what
-every caller recognises it by. The parser now also reads the file on its OWN
-axis first and places the block afterwards -- it used to write straight into a
-sequence-length array, so a file covering 10-129 landed at 1-120 before
-anything could notice.
+The second failure outlived the first. The config carries ONE tools list and one
+path template, so a tool is declared for every protein; a tool with no data for
+one of them therefore declared a track that was never written, and verify_export
+refused the entire export. One unreadable raw file in a seven-protein panel made
+the other six unusable -- the same shape as the scheduler's parse loop and the
+merge step, in a third place.
 
-WALTZ's .dat carries positions and scores and no identities at all, so nothing
-inside a short file can place it: 120 lines against a 132-residue chain is
-equally consistent with residues 1-120 and with 13-132, and the two readings
-put every segment twelve residues apart. The offset is therefore declared, per
-protein, in [predictors.waltz] offsets -- a statement about what was SUBMITTED,
-which only the submitter knows. Per protein by design: one offset applied to a
-whole panel would silently shift every protein whose file was in fact complete,
-which is this machinery's own failure mode reintroduced one level up.
+A gap is now written down rather than fatal: a placeholder track of NaN scores
+for that protein. NaN says this tool predicted NOTHING about this protein, which
+is what happened; zeros would say it looked and found nothing, which it did not.
+It is the same marker a truncated submission already uses for the residues it
+did not cover, so amyloscope needed no change to read it -- the tool contributes
+no calls, and the coverage is reported per protein. The export warns, naming
+every (protein, predictor) pair it had to fill.
 
-Declaring it exposed a gap of its own. The pipeline parses through the RUNNER,
-not through get_parser(), so a [predictors.waltz] key that only the parser
-reads was validated at load and then ignored by every route except the
-single-file CLI. The runner carries the offsets now, and the same forwarding
-was added for FoldAmyloid's use_tool_flag and accept_partial.
+verify_export's advice was wrong for this case and only for this case. It
+offered stale tracks from an earlier export as "the usual cause" under every
+failure, including "declared in the config but absent", which is that cause's
+exact opposite: a reader following it cleans the directory, re-exports, and gets
+the same error. The hint is now offered only where it could apply.
 
-On the panel this came from, all fourteen saved files are now usable: WALTZ
-seven of seven with RPS12 declared, FoldAmyloid seven of seven once its RPL27
-and RPS28 exports are swapped back into their own names. RPS12's APR moves from
-64-68 as the file numbers it to 73-77 where it belongs, and twelve residues in
-each of its two tracks are blank rather than zero.
+Checked against the panel this came from, unchanged: twelve predictors declared
+including PATH, RPS12's missing WALTZ track written as not-predicted, the export
+loadable, and amyloscope running it through to a report that states RPS12 as
+foldamyloid 120/132 and waltz 0/132. Six tests. 564 pass, 7 skip.
 
-Three guards earn their place in passing: a profile with holes in it is refused
-(it cannot be placed against anything), a profile longer than the sequence is
-refused as a different protein rather than reported as "14 of 12 positions",
-and partial acceptance can be switched off with accept_partial=False for a run
-that wants to require complete files.
-
-Eighteen tests. 558 pass, 7 skip.
+Still commented out in config.cfg, deliberately, since it is a claim about what
+was submitted rather than a default: [predictors.waltz] offsets = RPS12:9.
+Uncommenting it gives RPS12 a real WALTZ track in place of the placeholder.

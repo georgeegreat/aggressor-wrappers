@@ -67,9 +67,12 @@ AMYLOSCOPE_TOOL_NAMES: dict[str, str | None] = {
     "crossbeta": "crossbeta",
     # PASTA 2.0: different spelling on each side.
     "pasta": "pasta2",
-    # PATH has no adapter and no mechanism family in amyloscope. Carrying it would
-    # name a tool the analysis layer cannot place, so it is skipped loudly.
-    "path": None,
+    # PATH. amyloscope gained a native `path` adapter and a `threading`
+    # mechanism family, so there is no longer anything to skip: the tracks were
+    # being written to disk and then left out of the config that declares them,
+    # which is the one shape of failure where the data looks present and is not
+    # in the panel.
+    "path": "path",
 }
 
 #: The adapter that reads a track this package wrote. One adapter, because every
@@ -83,6 +86,42 @@ DEFAULT_TIERS = [
     ("strong", 0.75, "#2166AC"),
     ("moderate", 0.5, "#FDAE61"),
 ]
+
+
+def _write_absent_tracks(
+    out_root: Path,
+    predictors: list[str],
+    proteins: dict[str, dict],
+    per_protein: dict[str, set[str]],
+) -> list[tuple[str, str]]:
+    """Placeholder tracks for (protein, predictor) pairs with no data.
+
+    Returns the pairs it wrote, so the caller can report them.
+    """
+    gaps: list[tuple[str, str]] = []
+    for protein_id, meta in proteins.items():
+        length = meta.get("length") or len(meta.get("sequence") or "")
+        if not length:
+            continue
+        sequence = meta.get("sequence") or ""
+        for key in predictors:
+            if AMYLOSCOPE_TOOL_NAMES.get(key, key) is None:
+                continue
+            if key in per_protein.get(protein_id, set()):
+                continue
+            destination = out_root / "tracks" / key / f"{protein_id}.csv"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(
+                {
+                    "Number": range(1, length + 1),
+                    "Residue": list(sequence) if len(sequence) == length
+                    else [""] * length,
+                    "Score": [float("nan")] * length,
+                    "APR": [False] * length,
+                }
+            ).to_csv(destination, index=False)
+            gaps.append((protein_id, key))
+    return gaps
 
 
 def export_protein(
@@ -309,10 +348,12 @@ def export_run(
 
     proteins: dict[str, dict] = {}
     predictors: set[str] = set()
+    per_protein: dict[str, set[str]] = {}
     for csv in csvs:
         pid = protein_id_from_merged(csv)
         written = export_protein(csv, pid, out_root)
         predictors.update(written)
+        per_protein[pid] = set(written)
         df = pd.read_csv(csv)
         meta: dict = {"length": int(df["position"].max())}
         if sequences and pid in sequences:
@@ -341,6 +382,21 @@ def export_run(
         proteins[pid] = meta
 
     ordered = [k for k in PREDICTOR_REGISTRY if k in predictors]
+
+    # The config carries ONE tools list and one path template, so a tool is
+    # declared for every protein. A tool with no data for one of them therefore
+    # declares a track that was never written, and the whole export is refused
+    # -- one refused raw file in a seven-protein panel making the other six
+    # unusable, which is the same "one bad item costs the batch" shape as the
+    # scheduler had.
+    #
+    # The gap is real and is written down rather than papered over: a
+    # placeholder track of NaN scores says this tool predicted NOTHING about
+    # this protein, which is what happened, and is the same marker a truncated
+    # submission uses for the residues it did not cover. amyloscope reads NaN
+    # as not-predicted, so the tool contributes no calls and the coverage is
+    # reported per protein instead of the run dying here.
+    gaps = _write_absent_tracks(out_root, ordered, proteins, per_protein)
 
     # amyloscope refuses a primary category that no domain uses, but only once
     # the run starts, with a message that cannot name the categories the
@@ -374,6 +430,22 @@ def export_run(
         hypothesis=hypothesis,
         primary_domain_category=primary_domain_category,
     )
+    if gaps:
+        by_predictor: dict[str, list[str]] = {}
+        for protein_id, key in gaps:
+            by_predictor.setdefault(key, []).append(protein_id)
+        warnings.warn(
+            "no data for "
+            + "; ".join(
+                f"{key} on {', '.join(sorted(ids))}" for key, ids in sorted(by_predictor.items())
+            )
+            + ". Those tracks are written as not-predicted (NaN) rather than "
+            "zeros, so the tools contribute no calls for those proteins and "
+            "say nothing about them either. The coverage is reported per "
+            "protein in amyloscope's statistics.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     verify_export(out_root, ordered, proteins, config=config)
     return config
 
@@ -432,11 +504,25 @@ def verify_export(
         more = (
             f"\n  ... and {len(problems) - 10} more" if len(problems) > 10 else ""
         )
+        # The stale-tracks hint is offered only where it could be the cause.
+        # It was printed under every failure, including "declared but absent",
+        # which is its exact opposite -- a reader following it cleans the
+        # directory, re-exports, and gets the same error.
+        stale = any("missing [" in problem or "rows against" in problem
+                    for problem in problems)
+        hint = (
+            "\n\nA tracks/ directory that already held files from an earlier "
+            "export is the usual cause of this: the writer adds to it rather "
+            "than replacing it, so old and new tracks mix. Export into an empty "
+            "directory, or pass --clean."
+            if stale
+            else "\n\nA declared track that is absent means the config names a "
+            "tool this protein has no data for. Export writes a not-predicted "
+            "placeholder for that case, so reaching this message means the "
+            "track was removed after it was written, or the directory was "
+            "changed between the export and the check."
+        )
         raise ValueError(
             f"The export is not loadable by amyloscope ({len(problems)} "
-            f"problem(s)):\n  {shown}{more}\n\n"
-            f"A tracks/ directory that already held files from an earlier export is "
-            f"the usual cause: this writer adds to it rather than replacing it, so "
-            f"old and new tracks mix. Export into an empty directory, or pass "
-            f"--clean."
+            f"problem(s)):\n  {shown}{more}{hint}"
         )

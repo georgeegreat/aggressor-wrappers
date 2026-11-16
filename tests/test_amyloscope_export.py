@@ -201,10 +201,33 @@ def test_pasta_is_renamed_because_the_two_packages_spell_it_differently():
     assert AMYLOSCOPE_TOOL_NAMES["pasta"] == "pasta2"
 
 
-def test_a_predictor_with_no_counterpart_is_skipped_loudly():
-    """PATH has no amyloscope adapter and no mechanism family. Writing it into the
-    config would name a tool the analysis layer cannot place."""
-    assert AMYLOSCOPE_TOOL_NAMES["path"] is None
+def test_path_is_declared_now_that_amyloscope_can_place_it():
+    """PATH was mapped to None while amyloscope had no adapter for it.
+
+    It has one now, and a `threading` mechanism family of its own. Leaving the
+    mapping behind meant the tracks were written to disk and then left out of
+    the config that declares them -- the one shape of failure where the data
+    looks present and is not in the panel.
+    """
+    assert AMYLOSCOPE_TOOL_NAMES["path"] == "path"
+
+
+def test_a_predictor_with_no_counterpart_is_still_skipped_loudly(tmp_path, monkeypatch):
+    """The skip mechanism stays: a tool amyloscope cannot place must not be named.
+
+    Nothing currently maps to None, so the behaviour is pinned against a
+    deliberately unmapped predictor rather than against whichever one happens
+    to be unsupported today.
+    """
+    import aggressor_wrappers.core.amyloscope_export as module
+
+    monkeypatch.setitem(module.AMYLOSCOPE_TOOL_NAMES, "aggrescan", None)
+    run = _pipeline_run(tmp_path)
+    with pytest.warns(RuntimeWarning, match="aggrescan"):
+        main([str(run), "-o", str(tmp_path / "amylo")])
+
+    config = (tmp_path / "amylo" / "config.yaml").read_text()
+    assert "name: aggrescan" not in config
 
 
 def test_the_adapter_is_the_one_that_reads_a_normalised_track(tmp_path):
@@ -309,3 +332,107 @@ def test_a_merged_table_longer_than_its_sequence_is_refused(tmp_path):
     assert f"{n} rows for a {len(SEQ)}-residue" in message
     assert "duplicate header" in message
     assert "uniq -d" in message, "the error should carry the command that finds it"
+
+
+# --------------------------------------------------------------------------- #
+# A tool with no data for one protein must not sink the export.
+#
+# The config carries ONE tools list and one path template, so a tool is declared
+# for every protein. A tool missing for one of them therefore declared a track
+# that was never written, verify_export refused the whole export, and one
+# refused raw file in a seven-protein panel made the other six unusable -- the
+# same "one bad item costs the batch" shape the scheduler had.
+# --------------------------------------------------------------------------- #
+
+
+def _merged(path, protein_id, sequence, columns):
+    """A merged wide table carrying only ``columns`` (spec key -> (score, bin))."""
+    from aggressor_wrappers.core.schema import get_predictor_spec
+
+    data = {
+        "position": range(1, len(sequence) + 1),
+        "aa_name": list(sequence),
+    }
+    for key, (score, flag) in columns.items():
+        spec = get_predictor_spec(key)
+        data[spec.score_column] = [score] * len(sequence)
+        data[spec.bin_column] = [flag] * len(sequence)
+    pd.DataFrame(data).to_csv(path / f"{protein_id}_merged.csv", index=False)
+
+
+def _two_protein_run(tmp_path):
+    """RPS2 has both tools; RPS12 has only one."""
+    merged = tmp_path / "merged"
+    merged.mkdir(parents=True, exist_ok=True)
+    _merged(merged, "RPS2", "MAVLKMAVLK", {"aggrescan": (0.5, 1), "waltz": (90.0, 1)})
+    _merged(merged, "RPS12", "MAVLKMAVLKMA", {"aggrescan": (0.5, 1)})
+    return merged
+
+
+def test_a_gap_does_not_refuse_the_export(tmp_path):
+    out = tmp_path / "amylo"
+
+    with pytest.warns(RuntimeWarning, match="no data for waltz on RPS12"):
+        export_run(_two_protein_run(tmp_path), out)
+
+    assert (out / "config.yaml").is_file()
+    assert "name: waltz" in (out / "config.yaml").read_text()
+
+
+def test_the_gap_is_written_as_not_predicted_not_as_zeros(tmp_path):
+    """NaN says the tool predicted nothing here. Zero would be a prediction."""
+    out = tmp_path / "amylo"
+    with pytest.warns(RuntimeWarning):
+        export_run(_two_protein_run(tmp_path), out)
+
+    track = pd.read_csv(out / "tracks" / "waltz" / "RPS12.csv")
+
+    assert len(track) == 12
+    assert track["Score"].isna().all()
+    assert not track["APR"].any()
+
+
+def test_the_placeholder_keeps_the_protein_s_own_length_and_residues(tmp_path):
+    out = tmp_path / "amylo"
+    with pytest.warns(RuntimeWarning):
+        export_run(_two_protein_run(tmp_path), out)
+
+    track = pd.read_csv(out / "tracks" / "waltz" / "RPS12.csv")
+
+    assert list(track["Number"]) == list(range(1, 13))
+    assert "".join(track["Residue"]) == "MAVLKMAVLKMA"
+
+
+def test_a_complete_panel_writes_no_placeholders(tmp_path):
+    merged = tmp_path / "merged"
+    merged.mkdir()
+    _merged(merged, "RPS2", "MAVLKMAVLK", {"aggrescan": (0.5, 1), "waltz": (90.0, 1)})
+    out = tmp_path / "amylo"
+
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error", RuntimeWarning)
+        export_run(merged, out)
+
+    assert sorted(p.name for p in (out / "tracks").iterdir()) == ["aggrescan", "waltz"]
+
+
+def test_the_stale_tracks_hint_is_only_offered_where_it_fits(tmp_path):
+    """Following it on a 'declared but absent' failure cleans, re-exports, fails."""
+    out = tmp_path / "amylo"
+    with pytest.warns(RuntimeWarning):
+        export_run(_two_protein_run(tmp_path), out)
+
+    (out / "tracks" / "waltz" / "RPS12.csv").unlink()
+
+    with pytest.raises(ValueError) as excinfo:
+        verify_export(
+            out,
+            ["aggrescan", "waltz"],
+            {"RPS12": {"length": 12, "sequence": "MAVLKMAVLKMA"}},
+        )
+
+    message = str(excinfo.value)
+    assert "declared in the config but absent" in message
+    assert "already held files from an earlier export" not in message

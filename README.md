@@ -575,6 +575,17 @@ models over one region are redundancy. Forcing `best` on a curated table deletes
 the inner domains, which for a hypothesis about RNA-binding domains deletes the
 hypothesis.
 
+**A tool with no data for one protein is a gap, not a failure.** The config
+carries one `tools:` list and one path template, so every tool is declared for
+every protein. A tool missing for one of them used to declare a track that was
+never written, and the whole export was refused — one unreadable raw file in a
+seven-protein panel making the other six unusable. The gap is now written down
+instead: a placeholder track of `NaN` scores, which says this tool predicted
+nothing about this protein rather than that it predicted zero, and is the same
+marker a truncated submission uses for the residues it did not cover. The
+export warns, naming the pairs, and amyloscope reports the coverage per
+protein.
+
 **The claim is pre-declared.** `--primary-domain-category` is what makes the
 enrichment test directional; without it amyloscope runs the test over every
 category with none nominated, which is a search rather than a hypothesis. The
