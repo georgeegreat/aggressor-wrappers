@@ -69,14 +69,24 @@ class WALTZRunner(BasePredictorRunner):
         return cwd
 
     def discover_outputs(self, output_dir: Path, protein_ids: list[str]) -> dict[str, Path]:
-        """Map FASTA protein IDs to ``{id}_waltz.txt`` files under ``output_dir``."""
-        out_root = Path(output_dir)
-        mapping: dict[str, Path] = {}
-        for protein_id in protein_ids:
-            path = out_root / f"{protein_id}_waltz.txt"
-            if path.is_file():
-                mapping[protein_id] = path
-        return mapping
+        """Map FASTA protein IDs to their raw WALTZ file under ``output_dir``.
+
+        Not only ``{id}_waltz.txt``. WALTZ's own download is
+        ``WaltzJob_<job>_<protein>.dat`` and the server has been unreliable, so
+        the files a person actually has are usually ones saved months ago under
+        the server's naming. Looking for only the name this runner writes meant
+        a directory of good predictions discovered nothing, and the predictor
+        dropped out of the panel while its denominator stayed.
+        """
+        from aggressor_wrappers.core.raw_discovery import (
+            WALTZ_RULES,
+            WALTZ_SUFFIXES,
+            find_protein_files,
+        )
+
+        return find_protein_files(
+            Path(output_dir), protein_ids, WALTZ_RULES, suffixes=WALTZ_SUFFIXES
+        )
 
     def run(
         self,

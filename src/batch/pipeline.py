@@ -381,6 +381,7 @@ def _run_runner_batches(
                     save_raw_files=save_raw_files,
                     batch_label=batch_label,
                     emit=emit,
+                    drop_zone=layout.predictor_dir(runner_key),
                 )
             elif runner_key == "pasta":
                 raw_map = _run_pasta_batch(
@@ -903,21 +904,46 @@ def _run_waltz_batch(
     save_raw_files: Path | None,
     batch_label: str,
     emit: LogFn,
+    drop_zone: Path | None = None,
 ) -> dict[str, Path]:
     if skip_run:
-        emit(f"[WALTZ] batch {batch_label}: loading raw from {batch_work} …")
-        raw_map = runner.discover_outputs(batch_work, protein_ids)
-        missing = [pid for pid in protein_ids if pid not in raw_map]
-        if not missing:
+        # Same three places, in the same order, as the generic path: a run's own
+        # work/, then the drop zone, then the archive, merged rather than tried
+        # in turn. WALTZ needs it more than most -- the service has been down
+        # for long stretches, so the only copy of a prediction is often a file
+        # saved from the server months ago and dropped in by hand.
+        sources: list[tuple[str, Path]] = [("work", batch_work)]
+        if drop_zone is not None and drop_zone != batch_work:
+            sources.append(("drop zone", drop_zone))
+        searched = ", ".join(str(path) for _, path in sources)
+        emit(f"[WALTZ] batch {batch_label}: loading raw from {searched} …")
+
+        raw_map: dict[str, Path] = {}
+        for where, directory in sources:
+            if not directory.is_dir():
+                continue
+            outstanding = [pid for pid in protein_ids if pid not in raw_map]
+            found = runner.discover_outputs(directory, outstanding)
+            if found:
+                emit(
+                    f"[WALTZ] batch {batch_label}: {len(found)} raw file(s) from "
+                    f"the {where} ({directory})"
+                )
+                raw_map.update(found)
+
+        if len(raw_map) < len(protein_ids) and save_raw_files is not None:
+            archived = _archived_runner_outputs(save_raw_files, protein_ids, "waltz")
+            for protein_id, path in archived.items():
+                raw_map.setdefault(protein_id, path)
+
+        if raw_map:
             return raw_map
-        if save_raw_files is not None:
-            raw_map = _archived_runner_outputs(save_raw_files, protein_ids, "waltz")
-            if raw_map:
-                emit(f"[WALTZ] batch {batch_label}: loaded raw from {save_raw_files}")
-                return raw_map
         raise FileNotFoundError(
-            f"[WALTZ] batch {batch_label}: expected per-protein txt under {batch_work} "
-            f"or archived raw under {save_raw_files} (--skip-run)"
+            f"[WALTZ] batch {batch_label}: no raw output for any of "
+            f"{', '.join(protein_ids)}. Looked in {searched}"
+            + (f" and {save_raw_files}" if save_raw_files else "")
+            + ". With --skip-run, files obtained elsewhere go in the drop zone "
+            f"{drop_zone}; WALTZ's own .dat download keeps its server name."
         )
 
     emit(f"[WALTZ] batch {batch_label}: submitting {len(protein_ids)} sequence(s) to web service …")

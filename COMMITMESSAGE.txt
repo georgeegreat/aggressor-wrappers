@@ -1,112 +1,89 @@
-feat(batch): reuse predictor output that already exists
+fix(predictors): a prediction that exists must be usable
 
-A directory of perfectly good TANGO output could not be read. Four gates stood
-between raw files on disk and a merged table, and each was reasonable on its own.
+Three predictors had output that could not be read, each for a different
+reason, and all three failed the same way downstream: the tool dropped out of
+the panel while its denominator stayed, so every consensus tier was computed
+against a count of predictors that had not actually voted.
 
-TANGO had a runner and a profile parser but no parser CLASS and no registry
-entry. The scheduler's parse-only path and --skip-run both go through
-get_parser(), and _merge_protein drops any predictor list_parsers() does not
-know -- with a warning, since AmyloGram taught that lesson, but dropped all the
-same. TangoParser closes that: the profile logic in predictors/tango.py was
-always there, it simply had no way in. SCORE_COLUMNS is ('Aggregation',
-'Conc-Stab_Aggregation'); Beta is deliberately not selectable, because a
-beta-propensity column thresholded at TANGO's 5 % aggregation convention would
-be a different prediction wearing the same name.
+ArchCandy 2.0 takes a threshold in the submission payload and returns only
+arches at or above it. That threshold was the same number the parser binarises
+with, so at the 0.57 significance boundary the raw CSV could not show anything
+below 0.57. On the seven-protein ribosomal panel six proteins came back with a
+header and no rows, and the parser wrote each as a profile of zeros.
 
---skip-run then searched exactly one directory, {PREDICTOR}/work/batch_N. The
-batch index comes from the configured chunk size, not from the user, so filing
-imported output correctly meant predicting it. The predictor directory itself is
-now a drop zone, searched after work/ and MERGED with it rather than losing to
-it: a panel is often part-local and part-imported, and the first non-empty hit
-used to win outright, so three files left behind by an aborted run would hide
-the four obtained elsewhere. The --save-raw-files archive remains the third
-place looked at, and the error naming all three now also says where to put files
-rather than only where it looked.
+A profile of zeros is not nothing — it is a specific claim, and the wrong one.
+In the merged table, in an amyloscope track and in every figure it is
+indistinguishable from a tool that scored the protein and found nothing, and
+the job itself reports DONE with exitCode 0 either way, so no layer had cause
+to mention it. On RPL36a the panel fell to four calling predictors against a
+lowest tier needing five, and no consensus region was attainable for that
+protein at any tier.
 
-Then the executable was required anyway. backend = local resolves the class
-through select_backend, which raises BackendUnavailable when the tool is missing
--- at construction, before any file is looked at. For TANGO this made --skip-run
-unreachable for precisely the case it exists for: the distributed build is a
-Linux x86_64 ELF, so on an arm64 Mac the binary can never execute and its output
-can only ever arrive from another machine. get_runner takes parse_only, which
-the pipeline sets from skip_run and which tolerates a missing tool. The declared
-policy still picks the class, because it is what says which FORMAT to expect:
-output from a local binary or JAR is not shaped like output from the same tool's
-web service.
+submit_threshold (default 0.40, the service's own recall-oriented default) is
+now what the service filters at; threshold (0.57) is what calls. Under
+score_mode = highest the calls are identical either way — a residue takes the
+best single arch covering it, and an arch below the calling cut cannot flip a
+residue on — while the score column gains the ambiguous band, so a protein with
+no significant arch is visibly silent rather than merely empty. Under
+score_mode = cumulative the score column is a sum and does change; the calls
+still do not. A submit_threshold above the calling cut is refused, since that
+would discard arches the call would have accepted: a silent loss of calls
+rather than a loss of context. An empty region table is announced on stderr
+with both numbers, and recorded with the row count in the job sidecar — which
+matters because the pipeline deletes work/ at the end of a run, so by the time
+anyone asks why a protein is blank the raw file is gone.
 
-The fourth gate was the merge. It took the predictors named in this invocation,
-so adding one tool to a tree that already held eight meant re-running all nine
-or overwriting eight-tool merged tables with a one-tool table -- and re-running
-is not always available, since several runners clean work/ behind them.
---merge-existing widens the merge step alone: every registered predictor with
-parsed tables in this output tree enters the merged table, each one named in the
-log. A merged table is the denominator of every consensus tier computed from it,
-so a panel that changes width silently is the worst outcome available here;
-naming them costs nine lines. Requested predictors keep their order and stay
-first, so column order does not shuffle between runs.
+WALTZ and FoldAmyloid are both web services, and both have been down for long
+stretches. What a person has in that situation is a file saved from the server
+when it worked, under the server's own filename, in the server's own download
+format, and neither was recognised.
 
-Widening by registry key merged one file twice. archcandy and archcandy2 are two
-parsers -- 1.x cumulative and 2.0, different published cutoffs -- writing and
-reading the same {id}_ArchCandy.csv, and the merge refused the whole batch with
-"Duplicate predictor in merge input" after every tool had been parsed. The
-widening deduplicates by tag, prefers the canonical key, and says so when a tag
-is ambiguous instead of resolving it quietly: the file does not record which
-version wrote it.
+WALTZ offers two downloads. The parser read only the detailed text the HTML
+result page yields; the .dat the server packages in its ZIP —
+position<TAB>score, one line per residue, zero outside a predicted segment —
+went unread, although the runner has always harvested those files. Both are now
+read, and the format is detected from the content rather than the extension,
+because a .txt saved from the ZIP holds per-residue data and a .dat renamed by
+hand may hold either. Detection keys on the absence of a '>' header and on the
+first field being an integer with no '-', so a detailed file whose first region
+happens to start at position 1 is not misread as a position.
 
-A partial batch no longer raises KeyError. _parse_and_write_runner_batch indexed
-raw_map for every protein in the batch, which is safe on the run path (missing
-output is checked before parsing) and not on the skip-run path, where raw comes
-from wherever it happens to be. A drop zone short by one file produced
-KeyError('RPL27'), naming neither the predictor nor the directory that was
-short. The proteins with raw are parsed; the rest are named.
+The per-residue file carries no header, so the only thing tying it to a protein
+is its filename. Its length is checked against the query sequence and a file
+that does not cover every residue exactly once is refused: a file one residue
+short, or one belonging to a different chain of similar length, otherwise
+parses perfectly and attributes someone else's segments. This is not
+hypothetical — it caught a FoldAmyloid export filed under the wrong protein in
+this project's own sample set, 69 residues of RPS28 named RPL27.
 
-Two defects in the amyloscope handoff, both found by exporting a real panel.
+Discovery was the other half. Both runners looked for exactly the filename that
+runner writes itself, which is correct for output the runner produced and
+useless for output it did not. WALTZ's own download is
+WaltzJob_<job>_<protein>.dat; FoldAmyloid's server offers no fixed filename at
+all, so an export saved by hand is named whatever the person called it. A drop
+zone full of genuine predictions discovered nothing.
 
-Overlap resolution was applied to every annotation source. keep="best" is right
-for a scan -- Pfam reports KH_1 and KH_dom over the same residues, and drawing
-both stacks two boxes where the protein has one domain -- and wrong for a
-curated table, where nesting IS the annotation. RPS2's dsRNA-binding-like domain
-(96-167) sits inside its uS5 core (51-268) and RPL27's KOW domain (6-88) inside
-its C-terminal domain (52-136); keeping only the outer hit deleted both, and
-they are the only two rna_binding domains in the panel. Whether overlap is
-redundancy or structure is a property of where the annotation came from, so
-DomainSet carries its own policy, DEFAULT_KEEP maps each source to one, and
---domain-overlaps overrides it.
+core/raw_discovery.py holds the naming rules per predictor, tried in order:
+what this package writes, then the server's download name, then a bare rename.
+Matching is on the whole stem, never a prefix — RPL36 and RPL36a are both in
+this panel and a RPL36* glob hands one protein the other's track, which is the
+worst failure available here because it produces a complete, plausible, wrong
+answer. Two files matching the same rule are an ambiguity and are refused by
+name rather than resolved by sort order.
 
-The exported config carried no primary_domain_category. amyloscope reads it to
-decide which category the enrichment test is directed at; absent, the test runs
-over every category with none nominated, which is a search wearing a
-hypothesis's clothes. --primary-domain-category and --hypothesis export the
-pre-declared claim, and a category no exported domain carries is refused before
-any track is written -- amyloscope checks it too, but only at run time, by which
-point the message cannot name the categories the annotation does carry. While
-there: the tools loop rebound `name`, the panel-name parameter, to each tool's
-name. Nothing read it after the loop, so nothing was wrong yet.
+_run_waltz_batch now searches the drop zone the way the generic path does,
+merging work/, the drop zone and the --save-raw-files archive instead of taking
+the first non-empty hit. FoldAmyloid already ran through the generic path and
+needed only the discovery rules.
 
-Two fixes with no connection to the above.
+The README's ArchCandy entry documented neither threshold correctly. It gave
+cumulative as the default when the configured default is highest, and described
+ArchCandy_bin as "1 if residue in any predicted region" when the parser has for
+some time thresholded on the best single arch — an arch the tool itself classes
+as non-significant is not evidence, and the entry said it was.
 
-aggressor-parse accepted --threshold for every predictor and forwarded it for
-five. The mapping from the flag to each parser's keyword covered path, pasta,
-aggreprot, crossbeta and appnn; for the other eight the flag parsed, produced an
-empty kwargs dict, and the parser ran at its default. The resulting table is
-binarised at 5.0 while the command line says 10.0, and nothing in the file or
-the log distinguishes it from one binarised at 10.0. The mapping now covers
-every parser taking an overridable threshold, an invariant test checks each
-entry names a parameter that parser's __init__ really declares, and the
-predictors where the flag cannot work are refused with the reason: AGGRESCAN and
-FoldAmyloid accept a threshold that is inert while use_tool_flag is on, and
-WALTZ output arrives already binarised.
-
-core/net.py gains http_error_308. redirect_request is only consulted for a
-status urllib routes to it, and CPython gained
-HTTPRedirectHandler.http_error_308 in 3.11, so on 3.10 and earlier a 308 never
-reached the override added in the previous commit: it fell through to
-http_error_default and raised HTTPError 308. The alias binds the handler urllib
-itself would, so it is harmless where the attribute already exists.
-
-Validated against the seven-protein rms_last.faa panel on a machine with no
-TANGO binary at all: all seven files parse from the drop zone, lengths match the
-FASTA exactly, RPS2 gives APRs at 96-101, 126-131 and 213-219, --merge-existing
-rebuilds nine-predictor merged tables, and the export runs through amyloscope
-validate and amyloscope run with H1 stated over rna_binding and the nested
-domains counted. Twenty-three new tests; 495 pass, 7 skip.
+Validated against real saved output: four WALTZ .dat files parse at their true
+lengths with RPL22's segment at 59-64 and RPL27's at 73-81, four FoldAmyloid
+exports parse from their own f markers, the mislabelled one is refused with 66
+residue mismatches, and a --skip-run pipeline over a drop zone of both produces
+merged tables carrying exactly those calls. Thirty-one tests; 531 pass, 7 skip.

@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -79,6 +80,17 @@ SIGNIFICANCE_THRESHOLD = 0.57       # ArchCandy 2.0 significance boundary
 LOCAL_1_0_THRESHOLD = 0.56
 
 
+def _region_rows(csv_text: str) -> int:
+    """Number of data rows in an ArchCandy 2.0 region table.
+
+    The service answers a job with no candidates with a header and nothing
+    else, so "did this protein produce any arch" is a row count, not a status
+    code: the job reports DONE with exitCode 0 either way.
+    """
+    lines = [line for line in csv_text.splitlines() if line.strip()]
+    return max(0, len(lines) - 1)
+
+
 def significance_band(score: float) -> str:
     """Label a score by ArchCandy 2.0's documented calibration."""
     if score < 0.40:
@@ -96,16 +108,46 @@ class ArchCandy2Runner(BasePredictorRunner):
         *,
         base_url: str = _DEFAULT_BASE_URL,
         threshold: float = WEB_DEFAULT_THRESHOLD,
+        submit_threshold: float | None = None,
         transmembrane: bool = False,
         score_mode: str = "highest",
         poll_interval_seconds: float = 2.0,
         timeout_seconds: int = 1800,
         **_ignored,
     ) -> None:
+        """``threshold`` CALLS; ``submit_threshold`` is what the service FILTERS at.
+
+        They were one number, and that number went into the POST payload, so
+        the service returned only arches at or above the calling cut and the
+        raw CSV could not show anything below it. At the 0.57 significance
+        boundary six of seven ribosomal proteins came back with an empty region
+        table, which the parser then wrote as a profile of zeros -- identical,
+        in every file downstream, to a tool that had scored the protein and
+        found nothing. "No significant arch" and "no arch" are different
+        claims, and the second one is the one the output appeared to make.
+
+        Submitting at the recall floor and calling at the significance boundary
+        keeps the calls EXACTLY as they were under ``score_mode='highest'`` --
+        a residue takes the best single arch covering it, and an arch below the
+        calling cut cannot flip a residue on -- while the score column gains
+        the ambiguous band, so a silent protein is visibly silent rather than
+        merely empty. Under ``score_mode='cumulative'`` the score column is a
+        sum over arches and so does change; the calls still do not.
+        """
         self.base_url = (
             base_url or os.environ.get("AGGRESSOR_ARCHCANDY2_BASE_URL") or _DEFAULT_BASE_URL
         ).rstrip("/") + "/"
         self.threshold = float(threshold)
+        # Never above the calling cut: submitting higher would discard arches
+        # that the call would have accepted, which is a silent loss of calls
+        # rather than a loss of context.
+        floor = WEB_DEFAULT_THRESHOLD if submit_threshold is None else float(submit_threshold)
+        if submit_threshold is not None and floor > self.threshold:
+            raise ValueError(
+                f"submit_threshold ({floor}) is above threshold ({self.threshold}): "
+                f"the service would filter out arches the call would accept"
+            )
+        self.submit_threshold = min(floor, self.threshold)
         self.transmembrane = bool(transmembrane)
         self.score_mode = score_mode
         self.poll_interval_seconds = float(poll_interval_seconds)
@@ -136,7 +178,7 @@ class ArchCandy2Runner(BasePredictorRunner):
             "api/tools/archCandy/jobs",
             payload={
                 "sequence": fasta_text,
-                "threshold": self.threshold,
+                "threshold": self.submit_threshold,
                 "transmembrane": self.transmembrane,
             },
         )
@@ -186,10 +228,34 @@ class ArchCandy2Runner(BasePredictorRunner):
 
         dest = cwd / f"{protein_id}_archcandy2.csv"
         dest.write_text(csv_text, encoding="utf-8")
+
+        # An empty region table is a RESULT and has to be said out loud. Written
+        # silently it becomes a profile of zeros, and six proteins' worth of
+        # those cost the panel a voter on every one of them while the merged
+        # tables, the consensus denominator and the figures all looked normal.
+        if _region_rows(csv_text) == 0:
+            print(
+                f"[ArchCandy] {protein_id}: the service returned NO beta-arch "
+                f"candidates at or above the submitted threshold "
+                f"{self.submit_threshold} (calls are made at {self.threshold}). "
+                f"The per-residue profile for this protein is therefore all "
+                f"zeros -- it records an empty result, not a scored one.",
+                file=sys.stderr,
+            )
         # Results expire server-side; record when, beside the data, so a stale
         # job id in a log is recognisable as expired rather than broken.
         (cwd / f"{protein_id}_archcandy2.job.json").write_text(
-            json.dumps({**job, **state, "threshold": self.threshold}, indent=1)
+            json.dumps(
+                {
+                    **job,
+                    **state,
+                    "threshold": self.threshold,
+                    "submit_threshold": self.submit_threshold,
+                    "score_mode": self.score_mode,
+                    "region_rows": _region_rows(csv_text),
+                },
+                indent=1,
+            )
         )
         self.last_raw_path = dest
         return dest
@@ -233,6 +299,14 @@ class ArchCandy2Runner(BasePredictorRunner):
             raw_path = self.execute(fasta_path, cwd)
 
         self.last_raw_path = raw_path
-        return ArchCandy2Parser(score_mode=self.score_mode, threshold=self.threshold).parse(
-            raw_path, protein_id=protein_id, sequence=sequence
-        )
+        result = ArchCandy2Parser(
+            score_mode=self.score_mode, threshold=self.threshold
+        ).parse(raw_path, protein_id=protein_id, sequence=sequence)
+        # Carried so a downstream reader can tell an empty region table from a
+        # scored one without re-reading the raw file, which the pipeline
+        # deletes with work/ at the end of a run.
+        rows = _region_rows(raw_path.read_text(encoding="utf-8", errors="replace"))
+        result.metadata["archcandy_region_rows"] = rows
+        result.metadata["archcandy_submit_threshold"] = self.submit_threshold
+        result.metadata["archcandy_call_threshold"] = self.threshold
+        return result

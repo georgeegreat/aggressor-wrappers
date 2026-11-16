@@ -223,12 +223,25 @@ class FoldAmyloidRunner(BasePredictorRunner):
         return self.execute(fasta_path, work_dir)
 
     def discover_outputs(self, output_dir: Path, protein_ids: list[str]) -> dict[str, Path]:
-        out_root = Path(output_dir)
-        return {
-            pid: out_root / f"{pid}_foldamyloid.csv"
-            for pid in protein_ids
-            if (out_root / f"{pid}_foldamyloid.csv").is_file()
-        }
+        """Map FASTA protein IDs to their raw FoldAmyloid export.
+
+        The server offers no fixed filename, so an export saved by hand is
+        named whatever the person called it -- usually just the protein. Only
+        ``{id}_foldamyloid.csv`` was recognised, which is the name this runner
+        writes and therefore the one name a manually saved file never has.
+        """
+        from aggressor_wrappers.core.raw_discovery import (
+            FOLDAMYLOID_RULES,
+            FOLDAMYLOID_SUFFIXES,
+            find_protein_files,
+        )
+
+        return find_protein_files(
+            Path(output_dir),
+            protein_ids,
+            FOLDAMYLOID_RULES,
+            suffixes=FOLDAMYLOID_SUFFIXES,
+        )
 
     def run(
         self,

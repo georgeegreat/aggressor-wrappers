@@ -438,6 +438,15 @@ predictor's own directory, `{output}/{PREDICTOR}/`, named as that runner's
 `--save-raw-files` archive, and **merges** what it finds rather than taking the
 first non-empty hit: a panel that is part-local and part-imported works.
 
+Files are matched on their **whole stem**, never a prefix, under a short list
+of names per predictor: what this package writes (`{protein}_waltz.txt`,
+`{protein}_foldamyloid.csv`), the server's own download name
+(`WaltzJob_<job>_{protein}.dat`), and a bare rename (`{protein}.dat`,
+`{protein}.csv`). Prefix matching would hand `RPL36` the file belonging to
+`RPL36a`, which is the worst failure available here because it produces a
+complete, plausible, wrong answer. Two files claiming the same protein are
+refused by name rather than resolved by sort order.
+
 `--skip-run` does not require the tool to be installed. TANGO ships a Linux
 x86_64 ELF, so on an arm64 Mac the binary can never execute and its output can
 only ever arrive this way; `backend = local` no longer refuses at construction
@@ -614,12 +623,18 @@ Thresholds default from `config.cfg`.
 
 |               |                                                                                  |
 | ------------- | -------------------------------------------------------------------------------- |
-| **Raw input** | WALTZ detailed text output (`WaltzJob_*.txt` from web ZIP)                       |
+| **Raw input** | Either download: the detailed text (`>header` sections, `start-end<TAB>?<TAB>score`) **or** the per-residue `.dat` (`position<TAB>score`, one line per residue). The format is detected from the content, never from the extension |
 | **Algorithm** | Region average scores expanded to per-residue positions (0 outside regions)        |
 | `waltz_score` | Average score per residue in predicted region (0 if absent)                        |
 | `waltz_bin`   | 1 if score ≠ 0                                                                   |
 | **CLI**       | `aggressor-run waltz --fasta protein.fasta -o out.csv` or `aggressor-parse …`    |
 | **Runner**    | HTTP submit to [waltz.switchlab.org](https://waltz.switchlab.org/) (`text_long`)   |
+
+The per-residue `.dat` carries **no protein header**, so the only thing tying it
+to a protein is its filename. Its length is therefore checked against the query
+sequence and a file that does not cover every residue exactly once is refused:
+a file one residue short, or one belonging to a different chain of similar
+length, otherwise parses perfectly and attributes someone else's segments.
 
 
 
@@ -659,11 +674,32 @@ Thresholds default from `config.cfg`.
 |                   |                                                                                                      |
 | ----------------- | ---------------------------------------------------------------------------------------------------- |
 | **Raw input**     | Region CSV from API: `ID`, `Sequence`, `Arch`, `Start`, `Stop`, `Score`                              |
-| **Algorithm**     | Default `cumulative`: per-residue score = sum of `Score` for all regions covering that position (matches web *cumulative score* tab). Alt: `highest` = max region score |
-| `ArchCandy_score` | Cumulative (or max) region score; 0 outside any region                                               |
-| `ArchCandy_bin`   | 1 if residue in any predicted region                                                                 |
+| **Algorithm**     | `highest` (the configured default): a residue takes the best single arch covering it, so scores stay on ArchCandy's own [0, 1] scale. Alt: `cumulative` = sum over overlapping arches, which matches the web *cumulative score* tab but can exceed 1.0 |
+| `ArchCandy_score` | Best (or cumulative) arch score; 0 outside any region                                                |
+| `ArchCandy_bin`   | 1 where the BEST single arch covering the residue is at or above `threshold` — not merely "inside any arch", since an arch the tool itself classes as non-significant is not evidence |
 | **CLI**           | `aggressor-run archcandy --fasta protein.fasta -o out.csv` or `aggressor-parse …`                    |
 | **Runner**        | HTTP REST API at [bioinfo.crbm.cnrs.fr](https://bioinfo.crbm.cnrs.fr/archCandy-input); one sequence per job |
+
+**Two thresholds, and they are not the same number.** ArchCandy 2.0 takes a
+threshold in the submission payload and returns only arches at or above it, so
+`threshold` used to serve as both the server-side filter and the calling cut.
+At the 0.57 significance boundary that means the raw CSV cannot show anything
+below 0.57 — and a protein with no significant arch comes back with a
+header and no rows, which the parser writes as a profile of zeros. In the
+merged table, in an amyloscope track and in every figure, that is
+indistinguishable from a tool that scored the protein and found nothing. On a
+seven-protein ribosomal panel this happened to six of them, and ArchCandy went
+on counting in the consensus denominator for all six.
+
+`submit_threshold` (default 0.40, the service's own recall-oriented default) is
+what the service filters at; `threshold` (0.57) is what binarises. Under
+`score_mode = highest` the calls are **identical** either way — a residue takes
+the best single arch covering it, and an arch below the calling cut cannot flip
+a residue on — while the score column gains the ambiguous band, so a silent
+protein is visibly silent rather than merely empty. The runner also says so on
+stderr when the service returns no candidates at all, and records both
+thresholds and the row count in the job sidecar, which outlives the `work/`
+directory the pipeline deletes.
 
 
 
