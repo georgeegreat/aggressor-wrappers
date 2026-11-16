@@ -1,89 +1,55 @@
-fix(predictors): a prediction that exists must be usable
+feat(coverage): a prediction over part of a sequence is a prediction about that part
 
-Three predictors had output that could not be read, each for a different
-reason, and all three failed the same way downstream: the tool dropped out of
-the panel while its denominator stayed, so every consensus tier was computed
-against a count of predictors that had not actually voted.
+Both of this project's RPS12 files cover residues 10-129 of a 132-residue
+chain. Refused, the protein lost two predictors from its panel. Accepted at
+face value, each file aligns at residue 1 and every call lands nine residues
+early -- a complete, plausible, wrong answer that nothing downstream could
+detect. Neither is the right answer.
 
-ArchCandy 2.0 takes a threshold in the submission payload and returns only
-arches at or above it. That threshold was the same number the parser binarises
-with, so at the 0.57 significance boundary the raw CSV could not show anything
-below 0.57. On the seven-protein ribosomal panel six proteins came back with a
-header and no rows, and the parser wrote each as a profile of zeros.
+A short file is now accepted when its placement can be ESTABLISHED, and the
+residues outside it are marked not predicted rather than predicted-negative.
+Those are different claims: a zero says the tool looked and found nothing, and
+collapsing the two inflates every denominator computed from the track. The
+marker is NaN, which survives the parsed CSV as a blank cell, the merged table,
+and the amyloscope export, so nothing in the chain needed a new column.
 
-A profile of zeros is not nothing — it is a specific claim, and the wrong one.
-In the merged table, in an amyloscope track and in every figure it is
-indistinguishable from a tool that scored the protein and found nothing, and
-the job itself reports DONE with exitCode 0 either way, so no layer had cause
-to mention it. On RPL36a the panel fell to four calling predictors against a
-lowest tier needing five, and no consensus region was attainable for that
-protein at any tier.
+Placement is established two ways and guessed neither.
 
-submit_threshold (default 0.40, the service's own recall-oriented default) is
-now what the service filters at; threshold (0.57) is what calls. Under
-score_mode = highest the calls are identical either way — a residue takes the
-best single arch covering it, and an arch below the calling cut cannot flip a
-residue on — while the score column gains the ambiguous band, so a protein with
-no significant arch is visibly silent rather than merely empty. Under
-score_mode = cumulative the score column is a sum and does change; the calls
-still do not. A submit_threshold above the calling cut is refused, since that
-would discard arches the call would have accepted: a silent loss of calls
-rather than a loss of context. An empty region table is announced on stderr
-with both numbers, and recorded with the row count in the job sidecar — which
-matters because the pipeline deletes work/ at the end of a run, so by the time
-anyone asks why a protein is blank the raw file is gone.
+FoldAmyloid reports residue identities, so it places itself: the observed
+string is matched against the sequence and accepted only if it occurs at
+exactly one offset. Several means the sequence repeats and the file cannot be
+placed; none means it is not this protein's, which is the mis-filed case the
+identity check already caught and whose wording is kept, since that is what
+every caller recognises it by. The parser now also reads the file on its OWN
+axis first and places the block afterwards -- it used to write straight into a
+sequence-length array, so a file covering 10-129 landed at 1-120 before
+anything could notice.
 
-WALTZ and FoldAmyloid are both web services, and both have been down for long
-stretches. What a person has in that situation is a file saved from the server
-when it worked, under the server's own filename, in the server's own download
-format, and neither was recognised.
+WALTZ's .dat carries positions and scores and no identities at all, so nothing
+inside a short file can place it: 120 lines against a 132-residue chain is
+equally consistent with residues 1-120 and with 13-132, and the two readings
+put every segment twelve residues apart. The offset is therefore declared, per
+protein, in [predictors.waltz] offsets -- a statement about what was SUBMITTED,
+which only the submitter knows. Per protein by design: one offset applied to a
+whole panel would silently shift every protein whose file was in fact complete,
+which is this machinery's own failure mode reintroduced one level up.
 
-WALTZ offers two downloads. The parser read only the detailed text the HTML
-result page yields; the .dat the server packages in its ZIP —
-position<TAB>score, one line per residue, zero outside a predicted segment —
-went unread, although the runner has always harvested those files. Both are now
-read, and the format is detected from the content rather than the extension,
-because a .txt saved from the ZIP holds per-residue data and a .dat renamed by
-hand may hold either. Detection keys on the absence of a '>' header and on the
-first field being an integer with no '-', so a detailed file whose first region
-happens to start at position 1 is not misread as a position.
+Declaring it exposed a gap of its own. The pipeline parses through the RUNNER,
+not through get_parser(), so a [predictors.waltz] key that only the parser
+reads was validated at load and then ignored by every route except the
+single-file CLI. The runner carries the offsets now, and the same forwarding
+was added for FoldAmyloid's use_tool_flag and accept_partial.
 
-The per-residue file carries no header, so the only thing tying it to a protein
-is its filename. Its length is checked against the query sequence and a file
-that does not cover every residue exactly once is refused: a file one residue
-short, or one belonging to a different chain of similar length, otherwise
-parses perfectly and attributes someone else's segments. This is not
-hypothetical — it caught a FoldAmyloid export filed under the wrong protein in
-this project's own sample set, 69 residues of RPS28 named RPL27.
+On the panel this came from, all fourteen saved files are now usable: WALTZ
+seven of seven with RPS12 declared, FoldAmyloid seven of seven once its RPL27
+and RPS28 exports are swapped back into their own names. RPS12's APR moves from
+64-68 as the file numbers it to 73-77 where it belongs, and twelve residues in
+each of its two tracks are blank rather than zero.
 
-Discovery was the other half. Both runners looked for exactly the filename that
-runner writes itself, which is correct for output the runner produced and
-useless for output it did not. WALTZ's own download is
-WaltzJob_<job>_<protein>.dat; FoldAmyloid's server offers no fixed filename at
-all, so an export saved by hand is named whatever the person called it. A drop
-zone full of genuine predictions discovered nothing.
+Three guards earn their place in passing: a profile with holes in it is refused
+(it cannot be placed against anything), a profile longer than the sequence is
+refused as a different protein rather than reported as "14 of 12 positions",
+and partial acceptance can be switched off with accept_partial=False for a run
+that wants to require complete files.
 
-core/raw_discovery.py holds the naming rules per predictor, tried in order:
-what this package writes, then the server's download name, then a bare rename.
-Matching is on the whole stem, never a prefix — RPL36 and RPL36a are both in
-this panel and a RPL36* glob hands one protein the other's track, which is the
-worst failure available here because it produces a complete, plausible, wrong
-answer. Two files matching the same rule are an ambiguity and are refused by
-name rather than resolved by sort order.
-
-_run_waltz_batch now searches the drop zone the way the generic path does,
-merging work/, the drop zone and the --save-raw-files archive instead of taking
-the first non-empty hit. FoldAmyloid already ran through the generic path and
-needed only the discovery rules.
-
-The README's ArchCandy entry documented neither threshold correctly. It gave
-cumulative as the default when the configured default is highest, and described
-ArchCandy_bin as "1 if residue in any predicted region" when the parser has for
-some time thresholded on the best single arch — an arch the tool itself classes
-as non-significant is not evidence, and the entry said it was.
-
-Validated against real saved output: four WALTZ .dat files parse at their true
-lengths with RPL22's segment at 59-64 and RPL27's at 73-81, four FoldAmyloid
-exports parse from their own f markers, the mislabelled one is refused with 66
-residue mismatches, and a --skip-run pipeline over a drop zone of both produces
-merged tables carrying exactly those calls. Thirty-one tests; 531 pass, 7 skip.
+Eighteen tests. 558 pass, 7 skip.

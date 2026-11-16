@@ -27,6 +27,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from aggressor_wrappers.core.coverage import (
+    Coverage,
+    PartialCoverageError,
+    align_partial,
+    place,
+)
 from aggressor_wrappers.core.schema import PredictorResult, get_predictor_spec
 from aggressor_wrappers.predictors.base import BasePredictorParser
 
@@ -74,7 +80,12 @@ def _column(df: pd.DataFrame, aliases: tuple[str, ...], *, source, what: str) ->
 class FoldAmyloidParser(BasePredictorParser):
     spec = get_predictor_spec("foldamyloid")
 
-    def __init__(self, threshold: float | None = None, use_tool_flag: bool = True) -> None:
+    def __init__(
+        self,
+        threshold: float | None = None,
+        use_tool_flag: bool = True,
+        accept_partial: bool = True,
+    ) -> None:
         """
         ``use_tool_flag`` (default) binarises on FoldAmyloid's own ``f`` marker.
         Setting it False re-derives the call by thresholding the profile, which
@@ -86,6 +97,12 @@ class FoldAmyloidParser(BasePredictorParser):
             float(threshold) if threshold is not None else (self.spec.default_threshold or 21.4)
         )
         self.use_tool_flag = bool(use_tool_flag)
+        #: Whether a file covering a contiguous SUB-RANGE of the sequence is
+        #: accepted. It is, when the ``Res`` column places it uniquely: a
+        #: prediction over residues 10-129 is a real prediction about residues
+        #: 10-129. The residues outside it are marked not-predicted, never
+        #: predicted-negative. Set False to require full coverage.
+        self.accept_partial = bool(accept_partial)
 
     def parse(
         self,
@@ -105,27 +122,100 @@ class FoldAmyloidParser(BasePredictorParser):
         )
 
         n = len(sequence)
-        scores = [0.0] * n
-        binary = [0] * n
-        flagged = [0] * n
-        observed: list[str] = [""] * n
-
+        # Read the file on its OWN axis first, positions 1..m as it numbers
+        # them, and only then decide where that block sits in the sequence. The
+        # previous version wrote straight into a sequence-length array, so a
+        # file covering residues 10-129 of 132 landed at 1-120 before anything
+        # could notice -- every call nine residues early, and the mismatch
+        # reported as "a different protein".
+        rows = []
         for _, row in df.iterrows():
             try:
                 pos = int(row[number])
             except (TypeError, ValueError):
                 continue
-            idx = pos - 1
-            if not 0 <= idx < n:
-                raise ValueError(
-                    f"{source}: FoldAmyloid position {pos} outside the "
-                    f"{n}-residue sequence for {protein_id}"
+            rows.append(
+                (
+                    pos,
+                    float(pd.to_numeric(row[value], errors="coerce") or 0.0),
+                    str(row[residue]).strip().upper()[:1],
+                    1 if (fold is not None
+                          and str(row[fold]).strip().lower() in _TRUE_MARKERS)
+                    else 0,
                 )
-            scores[idx] = float(pd.to_numeric(row[value], errors="coerce") or 0.0)
-            observed[idx] = str(row[residue]).strip().upper()[:1]
-            if fold is not None:
-                marker = str(row[fold]).strip().lower()
-                flagged[idx] = 1 if marker in _TRUE_MARKERS else 0
+            )
+        if not rows:
+            raise ValueError(f"{source}: FoldAmyloid export has no usable rows")
+
+        rows.sort(key=lambda item: item[0])
+        first, last = rows[0][0], rows[-1][0]
+        if last - first + 1 != len(rows):
+            raise ValueError(
+                f"{source}: FoldAmyloid positions {first}-{last} are not "
+                f"contiguous ({len(rows)} rows). A profile with holes in it "
+                f"cannot be placed against a sequence."
+            )
+
+        block_scores = [score for _, score, _, _ in rows]
+        block_observed = "".join(res for _, _, res, _ in rows)
+        block_flags = [flag for _, _, _, flag in rows]
+
+        offset = first - 1
+        coverage = Coverage(1, n, n)
+        if len(rows) == n and block_observed == sequence.upper():
+            offset = 0
+        elif block_observed and block_observed == sequence[offset : offset + len(rows)].upper():
+            # The file's own numbering already places it correctly.
+            pass
+        elif block_observed:
+            if not self.accept_partial and len(rows) != n:
+                raise ValueError(
+                    f"{source}: FoldAmyloid covers {len(rows)} of {n} residues "
+                    f"and accept_partial is off"
+                )
+            # Its numbering disagrees with the sequence, or it is short. Place
+            # it by its residues, which is proof rather than assumption.
+            try:
+                offset = align_partial(block_observed, sequence, source=source)
+            except PartialCoverageError as exc:
+                # The identity check predates partial coverage and its wording
+                # is what every caller and test recognises a mis-filed export
+                # by. Placing failed, so this IS that case; the mismatch detail
+                # is what makes it actionable.
+                against = sequence[: len(block_observed)].upper()
+                mismatches = [
+                    i + 1
+                    for i, (a, b) in enumerate(zip(block_observed, against))
+                    if a != b
+                ]
+                detail = ""
+                if mismatches:
+                    first = mismatches[0]
+                    detail = (
+                        f": {len(mismatches)} residue mismatch(es), first at "
+                        f"position {first} (file says "
+                        f"{block_observed[first - 1]!r}, sequence has "
+                        f"{against[first - 1]!r})"
+                    )
+                raise ValueError(
+                    f"{source}: FoldAmyloid output does not match the sequence "
+                    f"given for {protein_id}{detail}. {exc}"
+                ) from exc
+        elif len(rows) != n:
+            raise ValueError(
+                f"{source}: FoldAmyloid covers {len(rows)} of {n} residues and "
+                f"reports no residue identities, so it cannot be placed"
+            )
+
+        scores, coverage = place(block_scores, offset=offset, length=n)
+        flagged_full, _ = place(
+            [float(f) for f in block_flags], offset=offset, length=n, fill=0.0
+        )
+        flagged = [int(f) for f in flagged_full]
+        observed = [""] * n
+        for i, residue_letter in enumerate(block_observed):
+            observed[offset + i] = residue_letter
+        binary = [0] * n
 
         # Identity check. Predictor outputs have been mis-filed before -- two
         # FoldAmyloid exports in this project carry each other's protein -- and a
@@ -150,7 +240,8 @@ class FoldAmyloidParser(BasePredictorParser):
                 )
 
         binary = flagged if (self.use_tool_flag and fold is not None) else [
-            1 if s >= self.threshold else 0 for s in scores
+            # NaN marks a residue the tool never saw; it is not a call.
+            1 if (s == s and s >= self.threshold) else 0 for s in scores
         ]
         return PredictorResult(
             protein_id=protein_id,
@@ -158,10 +249,13 @@ class FoldAmyloidParser(BasePredictorParser):
             spec=self.spec,
             scores=scores,
             binary=binary,
+            aux={"tool_flag": flagged, "covered": coverage.flags()},
             metadata={
                 "threshold": self.threshold,
                 "binarised_from": "tool_flag" if (self.use_tool_flag and fold is not None) else "profile",
                 "source": str(source),
+                "coverage_start": coverage.start,
+                "coverage_stop": coverage.stop,
+                "coverage": coverage.describe(),
             },
-            aux={"tool_flag": flagged},
         )

@@ -48,6 +48,7 @@ class WALTZRunner(BasePredictorRunner):
         output_format: str = "text_long",
         timeout_seconds: int | None = 180,
         combined_filename: str = "waltz_combined.txt",
+        offsets: str | dict | None = None,
     ) -> None:
         self.base_url = (base_url or os.environ.get("AGGRESSOR_WALTZ_BASE_URL") or _DEFAULT_BASE_URL).rstrip(
             "/"
@@ -57,6 +58,12 @@ class WALTZRunner(BasePredictorRunner):
         self.output_format = output_format
         self.timeout_seconds = int(timeout_seconds) if timeout_seconds else None
         self.combined_filename = combined_filename
+        #: Carried from [predictors.waltz] so that the pipeline path, which
+        #: parses through this runner rather than through get_parser(), applies
+        #: the same declared offsets as `aggressor-parse` does. Without it a
+        #: declaration in the config was read, validated and then ignored by
+        #: every route except the single-file CLI.
+        self.offsets = offsets
         self.last_raw_path: Path | None = None
 
     def execute_batch(self, fasta_path: Path, work_dir: str | Path) -> Path:
@@ -111,7 +118,7 @@ class WALTZRunner(BasePredictorRunner):
             raw_path = self._execute_single(fasta_path, cwd, protein_id)
 
         self.last_raw_path = raw_path
-        parser = WALTZParser()
+        parser = WALTZParser(offsets=self.offsets)
         return parser.parse(raw_path, protein_id=protein_id, sequence=sequence)
 
     def _execute_single(self, fasta_path: Path, work_dir: Path, protein_id: str) -> Path:

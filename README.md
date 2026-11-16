@@ -632,9 +632,32 @@ Thresholds default from `config.cfg`.
 
 The per-residue `.dat` carries **no protein header**, so the only thing tying it
 to a protein is its filename. Its length is therefore checked against the query
-sequence and a file that does not cover every residue exactly once is refused:
-a file one residue short, or one belonging to a different chain of similar
-length, otherwise parses perfectly and attributes someone else's segments.
+sequence, and a file that does not cover every residue exactly once is refused
+unless its placement is declared: a file one residue short, or one belonging to
+a different chain of similar length, otherwise parses perfectly and attributes
+someone else's segments.
+
+### Predictions that cover only part of a sequence
+
+A prediction over residues 10-129 is a real prediction about residues 10-129.
+What it is not is a statement about 1-9 or 130-132, so those residues are
+marked **not predicted** -- `NaN` in the score column -- rather than
+predicted-negative. Those are different claims, and collapsing them inflates
+every denominator computed downstream.
+
+Placement is established, never guessed:
+
+| format | how |
+| ------ | --- |
+| FoldAmyloid | its `Res` column is matched against the sequence; accepted only if it occurs at exactly **one** offset. Several means the sequence repeats and the file cannot be placed; none means it is not this protein's |
+| WALTZ `.dat` | nothing inside the file can place it, so the offset is declared per protein: `[predictors.waltz] offsets = RPS12:9` |
+
+Per protein by design: one offset applied to a whole panel would silently shift
+every protein whose file was in fact complete, which is the failure this
+machinery exists to prevent, reintroduced one level up. A declared offset is
+recorded in the parsed output beside the numbers it shifts, carried through the
+merged table as blank score cells, and reported by amyloscope per protein and
+per tool.
 
 
 

@@ -211,12 +211,36 @@ def run_multifasta_pipeline(
         to_merge = _widen_with_existing_parsed(layout, requested, emit=emit)
 
     merged_paths: dict[str, Path] = {}
+    unmerged: list[tuple[str, BaseException]] = []
     for protein_id in protein_ids:
-        merged_paths[protein_id] = _merge_protein(
-            protein_id,
-            layout,
-            to_merge,
-            emit=emit,
+        try:
+            merged_paths[protein_id] = _merge_protein(
+                protein_id,
+                layout,
+                to_merge,
+                emit=emit,
+            )
+        except (RuntimeError, ValueError, FileNotFoundError) as exc:
+            # A protein no predictor could produce output for is a gap in the
+            # panel, not a reason to discard the proteins that worked. This
+            # raised, so a single protein whose every tool had failed took the
+            # whole merge step with it -- including proteins already parsed by
+            # every predictor in the panel.
+            unmerged.append((protein_id, exc))
+            emit(f"[merge] {protein_id}: NO merged table -- {exc}")
+
+    if unmerged:
+        emit(
+            f"[merge] {len(merged_paths)} of {len(protein_ids)} protein(s) "
+            f"merged; no table for: "
+            + ", ".join(protein_id for protein_id, _ in unmerged)
+        )
+    if not merged_paths:
+        raise RuntimeError(
+            f"No protein produced a merged table. {len(unmerged)} failed; "
+            f"first was {unmerged[0][0]}: {unmerged[0][1]}"
+            if unmerged
+            else "No protein produced a merged table."
         )
 
     emit(f"[done] merged tables for {len(merged_paths)} protein(s) under {layout.merged_dir}")
@@ -349,6 +373,8 @@ def _run_runner_batches(
     # 371. Transient errors still propagate, because retrying is the right
     # response to those and the scheduler owns it.
     refused: list[tuple[str, list[str], BaseException]] = []
+    unreadable: list[tuple[str, BaseException]] = []
+    parsed_total = 0
     completed = 0
 
     for batch_index, batch in enumerate(batches, start=1):
@@ -452,7 +478,7 @@ def _run_runner_batches(
                     drop_zone=layout.predictor_dir(runner_key),
                 )
 
-            _parse_and_write_runner_batch(
+            parsed_here, failed_here = _parse_and_write_runner_batch(
                 runner,
                 runner_key,
                 batch_ids,
@@ -464,12 +490,31 @@ def _run_runner_batches(
                 save_raw_files=save_raw_files,
                 emit=emit,
             )
+            parsed_total += parsed_here
+            unreadable.extend(failed_here)
         except PermanentToolError as exc:
             refused.append((batch_label, batch_ids, exc))
             continue
         completed += 1
 
     _report_refusals(tag, refused, completed=completed, emit=emit)
+
+    if unreadable:
+        emit(
+            f"[{tag}] {parsed_total} protein(s) parsed, {len(unreadable)} raw "
+            f"file(s) unreadable across the run: "
+            + "; ".join(f"{pid}: {exc}" for pid, exc in unreadable)
+        )
+    if parsed_total == 0 and unreadable:
+        # Nothing readable anywhere is a question about the predictor, not
+        # about any one file: a broken parser, or a directory holding another
+        # tool's output. Said here, once, with the first error attached.
+        protein_id, exc = unreadable[0]
+        emit(
+            f"[{tag}] WARNING -- no raw file for this predictor could be read "
+            f"({len(unreadable)} tried). First failure, {protein_id}: {exc}. "
+            f"The predictor will be absent from every merged table."
+        )
 
 
 def _report_refusals(
@@ -714,7 +759,8 @@ def _parse_and_write_runner_batch(
     skip_run: bool,
     save_raw_files: Path | None,
     emit: LogFn,
-) -> None:
+) -> tuple[int, list[tuple[str, BaseException]]]:
+    """Parse one batch; returns ``(parsed_count, [(protein, error), ...])``."""
     tag = _predictor_tag(runner_key)
     # raw_map may legitimately cover only PART of the batch: under --skip-run
     # the raw files come from wherever they happen to be, and a drop zone
@@ -729,21 +775,40 @@ def _parse_and_write_runner_batch(
             f"{', '.join(without_raw)} -- parsing the remaining "
             f"{len(batch_ids) - len(without_raw)} of {len(batch_ids)}"
         )
+    # A file that will not parse is a property of THAT file, not of the
+    # predictor. The scheduler already treats a refused submission that way --
+    # "a single sequence carrying an X should cost that protein, not the other
+    # 371" -- and the parse step did not: one unreadable file raised out of the
+    # loop and took every protein after it in the batch with it. A seven-protein
+    # WALTZ batch lost RPS13 to a length mismatch in RPS12, with nothing in the
+    # log naming either, because the five before RPS12 had already been written
+    # and the run simply stopped.
+    failures: list[tuple[str, BaseException]] = []
+    parsed = 0
     for protein_id in batch_ids:
         if protein_id not in raw_map:
             continue
         raw_csv = raw_map[protein_id]
         single_fasta = layout.fasta_split_dir / f"{protein_id}.fasta"
         emit(f"[{tag}] batch {batch_label}: parsing {protein_id} …")
-        result = runner.run(
-            fasta=single_fasta,
-            protein_id=protein_id,
-            work_dir=batch_work,
-            skip_run=True,
-            **_raw_kwarg(runner, raw_csv),
-        )
+        try:
+            result = runner.run(
+                fasta=single_fasta,
+                protein_id=protein_id,
+                work_dir=batch_work,
+                skip_run=True,
+                **_raw_kwarg(runner, raw_csv),
+            )
+        except Exception as exc:                      # noqa: BLE001
+            failures.append((protein_id, exc))
+            emit(
+                f"[{tag}] batch {batch_label}: {protein_id} FAILED to parse "
+                f"{raw_csv} -- {type(exc).__name__}: {exc}"
+            )
+            continue
         out_csv = layout.predictor_parsed_dir(runner_key) / f"{protein_id}_{tag}.csv"
         result.to_csv(out_csv)
+        parsed += 1
         emit(f"[{tag}] batch {batch_label}: wrote {out_csv}")
 
         if not skip_run and save_raw_files is not None:
@@ -754,6 +819,59 @@ def _parse_and_write_runner_batch(
                 predictor_key=runner_key,
             )
             emit(f"[{tag}] archived raw → {archived}")
+
+    if failures:
+        emit(
+            f"[{tag}] batch {batch_label}: {len(failures)} file(s) unreadable, "
+            f"{parsed} parsed. Unreadable: "
+            + "; ".join(f"{pid} ({type(exc).__name__})" for pid, exc in failures)
+        )
+    # Reported, never raised. "Every file in this batch failed" sounds like a
+    # systematic problem worth stopping for, and is not: with
+    # sequences_per_run = 1 a batch IS one protein, so that condition is true
+    # of every single unreadable file, and raising on it stopped FoldAmyloid
+    # at the second of seven proteins. Whether a predictor is systematically
+    # broken is a question about the whole run, and _run_runner_batches answers
+    # it once, below.
+    return parsed, failures
+
+
+def _skip_run_directories(
+    batch_work: Path, drop_zone: Path | None
+) -> list[tuple[str, Path]]:
+    """Where raw output may be under ``--skip-run``, in priority order.
+
+    The batch partition is an artefact of THIS run's chunk size, not of where
+    files are: with ``sequences_per_run = 1`` a seven-protein panel has seven
+    ``batch_N`` directories, and someone adding files by hand puts all of them
+    in one. Searching only this batch's own directory then found the first
+    protein and none of the rest -- six of seven FoldAmyloid files sat in
+    ``work/batch_1`` while batches 2-7 looked in directories that did not
+    exist.
+
+    ``work/`` and its ``batch_*`` children are searched; ``parsed/`` is not,
+    and must not be. A parsed table is named ``{id}_{tag}.csv``, which is
+    exactly the canonical raw name for some predictors -- FoldAmyloid among
+    them -- so reaching into it would feed a parser its own output.
+    """
+    work_root = batch_work.parent
+    candidates: list[tuple[str, Path]] = [("this batch", batch_work)]
+    for sibling in sorted(work_root.glob("batch_*")):
+        if sibling.is_dir() and sibling != batch_work:
+            candidates.append(("another batch", sibling))
+    candidates.append(("the work directory", work_root))
+    if drop_zone is not None:
+        candidates.append(("the drop zone", drop_zone))
+
+    seen: set[Path] = set()
+    ordered: list[tuple[str, Path]] = []
+    for where, directory in candidates:
+        resolved = Path(directory)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append((where, resolved))
+    return ordered
 
 
 def _run_generic_batch(
@@ -800,9 +918,7 @@ def _run_generic_batch(
         #      be filed under a directory named after a batch index the user
         #      does not choose and cannot predict.
         #   3. --save-raw-files archive   -- {root}/{protein}/{predictor}.*
-        sources: list[tuple[str, Path]] = [("work", batch_work)]
-        if drop_zone is not None and drop_zone != batch_work:
-            sources.append(("drop zone", drop_zone))
+        sources = _skip_run_directories(batch_work, drop_zone)
         searched = ", ".join(str(path) for _, path in sources)
         emit(f"[{label}] batch {batch_label}: loading raw from {searched} …")
 
@@ -912,9 +1028,7 @@ def _run_waltz_batch(
         # in turn. WALTZ needs it more than most -- the service has been down
         # for long stretches, so the only copy of a prediction is often a file
         # saved from the server months ago and dropped in by hand.
-        sources: list[tuple[str, Path]] = [("work", batch_work)]
-        if drop_zone is not None and drop_zone != batch_work:
-            sources.append(("drop zone", drop_zone))
+        sources = _skip_run_directories(batch_work, drop_zone)
         searched = ", ".join(str(path) for _, path in sources)
         emit(f"[WALTZ] batch {batch_label}: loading raw from {searched} …")
 

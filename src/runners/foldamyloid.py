@@ -266,6 +266,10 @@ class FoldAmyloidRunner(BasePredictorRunner):
             raw_path = self.execute(fasta_path, cwd)
 
         self.last_raw_path = raw_path
-        return FoldAmyloidParser(threshold=self.threshold).parse(
+        return FoldAmyloidParser(
+            threshold=self.threshold,
+            use_tool_flag=getattr(self, "use_tool_flag", True),
+            accept_partial=getattr(self, "accept_partial", True),
+        ).parse(
             raw_path, protein_id=protein_id, sequence=sequence
         )

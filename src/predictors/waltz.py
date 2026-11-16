@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from aggressor_wrappers.core.coverage import Coverage, parse_offsets, place
 from aggressor_wrappers.core.schema import PredictorResult, get_predictor_spec
 from aggressor_wrappers.predictors.base import BasePredictorParser
 
@@ -98,7 +99,13 @@ def looks_per_residue(text: str) -> bool:
     return all(_PER_RESIDUE_LINE.match(line) for line in sample)
 
 
-def parse_per_residue(text: str, *, sequence: str, source: object = "<text>") -> tuple[list[float], list[int]]:
+def parse_per_residue(
+    text: str,
+    *,
+    sequence: str,
+    source: object = "<text>",
+    offset: int | None = None,
+) -> tuple[list[float], list[int], Coverage]:
     """Read ``position<TAB>score`` into aligned score and call lists.
 
     Positions must cover 1..len(sequence) exactly once. A short file is the
@@ -109,7 +116,7 @@ def parse_per_residue(text: str, *, sequence: str, source: object = "<text>") ->
     check the format affords.
     """
     n = len(sequence)
-    scores = [0.0] * n
+    values: dict[int, float] = {}
     seen: set[int] = set()
 
     for lineno, line in enumerate(text.splitlines(), start=1):
@@ -124,31 +131,70 @@ def parse_per_residue(text: str, *, sequence: str, source: object = "<text>") ->
         if position in seen:
             raise ValueError(f"{source}: position {position} appears twice")
         seen.add(position)
-        if not 1 <= position <= n:
-            raise ValueError(
-                f"{source}: position {position} outside the {n}-residue "
-                f"sequence. The file is for a different protein, or a "
-                f"different isoform of this one."
-            )
-        scores[position - 1] = float(match.group(2))
+        values[position] = float(match.group(2))
 
-    missing = sorted(set(range(1, n + 1)) - seen)
-    if missing:
+    first, last = min(values), max(values)
+    if last - first + 1 != len(values):
         raise ValueError(
-            f"{source}: {len(missing)} of {n} positions absent (first: "
-            f"{missing[0]}). A per-residue WALTZ file covers every residue, so "
-            f"a short one is not this protein's."
+            f"{source}: positions {first}-{last} are not contiguous "
+            f"({len(values)} lines). A WALTZ profile with holes in it cannot "
+            f"be placed against a sequence."
         )
+    block = [values[pos] for pos in range(first, last + 1)]
+
+    if len(block) > n:
+        raise ValueError(
+            f"{source}: {len(block)} positions against a {n}-residue sequence. "
+            f"A longer profile is not a sub-range of this protein -- it is a "
+            f"different protein, or a different isoform of this one."
+        )
+    if last > n and offset is None:
+        raise ValueError(
+            f"{source}: position {last} outside the {n}-residue sequence. The "
+            f"file is for a different protein, or a different isoform of this "
+            f"one."
+        )
+
+    if offset is None:
+        if len(block) != n or first != 1:
+            # No residue identities anywhere in this format, so nothing INSIDE
+            # the file can place it: a 120-line file against a 132-residue
+            # chain is equally consistent with residues 1-120 and with 13-132,
+            # and the two readings put every segment twelve residues apart.
+            # Only the person who knows what was submitted can say, so the
+            # offset is declared rather than inferred.
+            raise ValueError(
+                f"{source}: covers {len(block)} of {n} positions "
+                f"({first}-{last}); {n - len(block)} absent. A per-residue "
+                f"WALTZ file carries no residue "
+                f"identities, so a partial one cannot be placed from its "
+                f"contents. Re-run WALTZ on the full sequence, or declare where "
+                f"this block starts: [predictors.waltz] offsets = "
+                f"<PROTEIN>:<0-based offset>."
+            )
+        offset = 0
+
+    scores, coverage = place(block, offset=offset, length=n)
 
     # Nonzero means "inside a predicted segment": the server writes the
     # segment's score across its residues and 0.0 everywhere else, which is the
-    # same convention the detailed parser applies region by region.
-    binary = [1 if value != 0 else 0 for value in scores]
-    return scores, binary
+    # same convention the detailed parser applies region by region. NaN marks a
+    # residue the tool never saw, and is not a call.
+    binary = [1 if (value == value and value != 0) else 0 for value in scores]
+    return scores, binary, coverage
 
 
 class WALTZParser(BasePredictorParser):
     spec = get_predictor_spec("waltz")
+
+    def __init__(self, offsets: str | dict | None = None) -> None:
+        """``offsets`` places a partial per-residue file, per protein.
+
+        ``"RPS12:9"`` says RPS12's .dat begins at residue 10. Per protein by
+        design: one offset applied to a whole panel would silently shift every
+        protein whose file was in fact complete.
+        """
+        self.offsets = parse_offsets(offsets)
 
     def parse(
         self,
@@ -160,13 +206,17 @@ class WALTZParser(BasePredictorParser):
     ) -> PredictorResult:
         text = Path(source).read_text()
         if looks_per_residue(text):
-            scores, binary = parse_per_residue(
-                text, sequence=sequence, source=source
+            scores, binary, coverage = parse_per_residue(
+                text,
+                sequence=sequence,
+                source=source,
+                offset=self.offsets.get(protein_id),
             )
             layout = "per_residue"
         else:
             section = self._extract_section(text, protein_id=protein_id)
             scores, binary = self._parse_detailed_section(section, sequence=sequence)
+            coverage = Coverage(1, len(sequence), len(sequence))
             layout = "detailed"
 
         return PredictorResult(
@@ -175,7 +225,14 @@ class WALTZParser(BasePredictorParser):
             spec=self.spec,
             scores=scores,
             binary=binary,
-            metadata={"layout": layout, "source": str(source)},
+            aux={"covered": coverage.flags()},
+            metadata={
+                "layout": layout,
+                "source": str(source),
+                "coverage_start": coverage.start,
+                "coverage_stop": coverage.stop,
+                "coverage": coverage.describe(),
+            },
         )
 
     def _extract_section(self, text: str, *, protein_id: str) -> str:

@@ -284,6 +284,19 @@ def get_runner(
             "aggregation_threshold",
             predictor_options(key, cfg).get("aggregation_threshold", 0.25),
         )
+    if key == "waltz":
+        # The pipeline parses through the RUNNER, so a [predictors.waltz] key
+        # that only the parser reads never reaches a batch run. Offsets are the
+        # case that matters: declared, validated, and then silently unused
+        # everywhere but the single-file CLI.
+        offsets = predictor_options(key, cfg).get("offsets")
+        if offsets:
+            options.setdefault("offsets", offsets)
+    if key == "foldamyloid":
+        for name in ("use_tool_flag", "accept_partial"):
+            value = predictor_options(key, cfg).get(name)
+            if value is not None:
+                options.setdefault(name, value)
     if key in ("tango", "amylogram", "amylodeep"):
         options.setdefault(
             "threshold",

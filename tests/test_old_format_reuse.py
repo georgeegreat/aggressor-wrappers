@@ -99,23 +99,49 @@ def test_an_all_zero_file_is_a_scored_negative_not_an_error(tmp_path):
     assert len(result.scores) == len(SEQUENCE)
 
 
-def test_a_file_of_the_wrong_length_is_refused():
-    """The .dat has no header: its length is the only evidence of identity."""
+def test_a_short_file_is_refused_unless_its_offset_is_declared():
+    """The .dat has no residue identities, so nothing in it can place it.
+
+    A 10-line file against a 12-residue sequence is equally consistent with
+    residues 1-10 and with 3-12, and the two readings put every segment two
+    residues apart. Only the person who knows what was submitted can say.
+    """
     short = "".join(f"{i}\t0.000000\n" for i in range(1, 11))
 
     with pytest.raises(ValueError) as excinfo:
         parse_per_residue(short, sequence=SEQUENCE, source="p.dat")
 
-    assert "2 of 12 positions absent" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "covers 10 of 12 positions" in message
+    assert "offsets" in message        # names the way to resolve it
 
 
-def test_a_position_past_the_end_is_refused():
+def test_a_declared_offset_places_a_short_file():
+    """RPS12's real case: 120 residues of 132, beginning at residue 10."""
+    short = "".join(
+        f"{i}\t{96.0 if i <= 2 else 0.0:.6f}\n" for i in range(1, 11)
+    )
+
+    scores, binary, coverage = parse_per_residue(
+        short, sequence=SEQUENCE, source="p.dat", offset=2
+    )
+
+    assert coverage.start == 3 and coverage.stop == 12
+    assert coverage.missing == 2
+    # The segment lands where the declaration puts it, not at residue 1.
+    assert binary == [0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+    # Residues the tool never saw are NaN, not 0: those are different claims.
+    assert scores[0] != scores[0] and scores[1] != scores[1]
+
+
+def test_a_longer_file_is_refused_as_a_different_protein():
+    """A profile LONGER than the sequence is not a truncation of it."""
     longer = "".join(f"{i}\t0.000000\n" for i in range(1, 15))
 
     with pytest.raises(ValueError) as excinfo:
         parse_per_residue(longer, sequence=SEQUENCE, source="p.dat")
 
-    assert "outside the 12-residue sequence" in str(excinfo.value)
+    assert "not a sub-range" in str(excinfo.value)
 
 
 def test_a_repeated_position_is_refused():
@@ -130,9 +156,10 @@ def test_a_repeated_position_is_refused():
 def test_blank_lines_are_tolerated():
     text = "\n".join(f"{i}\t0.0" for i in range(1, 13)) + "\n\n"
 
-    scores, binary = parse_per_residue(text, sequence=SEQUENCE)
+    scores, binary, coverage = parse_per_residue(text, sequence=SEQUENCE)
 
     assert len(scores) == 12 and sum(binary) == 0
+    assert coverage.is_complete
 
 
 # --------------------------------------------------------------------------- #
@@ -263,3 +290,59 @@ def test_the_runners_expose_the_widened_discovery(tmp_path):
 
     assert "RPL22" in WALTZRunner().discover_outputs(waltz_dir, ["RPL22"])
     assert "RPL22" in FoldAmyloidRunner().discover_outputs(fold_dir, ["RPL22"])
+
+
+# --------------------------------------------------------------------------- #
+# A protein no predictor could produce output for is a gap, not a stop.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_merge_survives_a_protein_with_no_parsed_output(tmp_path):
+    """_merge_protein raised, and took the whole merge step with it.
+
+    On a seven-protein panel one protein (RPS12, whose saved files turned out
+    to be a 120-residue fragment of a 132-residue chain) had no output from
+    either tool. The merge of the other six -- already parsed by every
+    predictor in the panel -- died with it.
+    """
+    from aggressor_wrappers.batch.pipeline import run_multifasta_pipeline
+
+    fasta = tmp_path / "panel.faa"
+    fasta.write_text(">GOOD\nMAVLKMAVLK\n>GAP\nMAVLKMAVLKMA\n", encoding="utf-8")
+
+    out = tmp_path / "out"
+    drop = out / "waltz"
+    drop.mkdir(parents=True)
+    # A file for GOOD only; GAP has nothing anywhere.
+    (drop / "GOOD.dat").write_text(
+        "".join(f"{i}\t0.000000\n" for i in range(1, 11)), encoding="utf-8"
+    )
+
+    log: list[str] = []
+    merged = run_multifasta_pipeline(
+        fasta,
+        out,
+        predictors=["waltz"],
+        skip_run=True,
+        log=log.append,
+    )
+
+    assert set(merged) == {"GOOD"}
+    joined = "\n".join(log)
+    assert "GAP: NO merged table" in joined
+    assert "1 of 2 protein(s) merged" in joined
+
+
+def test_a_run_where_nothing_merges_still_fails(tmp_path):
+    """Reporting a gap is not the same as tolerating an empty run."""
+    from aggressor_wrappers.batch.pipeline import run_multifasta_pipeline
+
+    fasta = tmp_path / "panel.faa"
+    fasta.write_text(">GAP\nMAVLKMAVLK\n", encoding="utf-8")
+    out = tmp_path / "out"
+    (out / "waltz").mkdir(parents=True)
+
+    with pytest.raises((RuntimeError, FileNotFoundError)):
+        run_multifasta_pipeline(
+            fasta, out, predictors=["waltz"], skip_run=True, log=lambda _: None
+        )
